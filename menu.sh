@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Project: YinDun Mihomo Server Manager (menu.sh)
+# Project: YinDun Server Manager (menu.sh)
 # Description: 主菜单与系统环境探测面板
 # ==============================================================================
 
-# 统一根目录定义
+# 确保脚本以 root 权限运行
+[[ $EUID -ne 0 ]] && echo -e "\033[31m[ERROR] 请使用 root 权限运行此脚本！(sudo bash menu.sh)\033[33m" && exit 1
+
+# 统一根目录与子目录定义
 BASE_DIR="/etc/yindun"
 MIHOMO_DIR="${BASE_DIR}/mihomo"
 WARP_DIR="${BASE_DIR}/warp"
+LOG_DIR="${BASE_DIR}/logs"
+
+# 自动初始化基础目录结构
+mkdir -p "${MIHOMO_DIR}" "${WARP_DIR}" "${LOG_DIR}"
 
 # 脚本版本号
 SCRIPT_VERSION="v1.0.0"
@@ -20,14 +27,17 @@ BLUE="\033[34m"
 CYAN="\033[36m"
 NC="\033[0m"
 
-# 远程仓库 Base URL (后续改成你的 GitHub Raw 链接)
+# TODO: 明天等你把子脚本推送到 GitHub 后，把这里改成你的仓库 Raw 地址
 REPO_URL="https://raw.githubusercontent.com/yzhtk12345/yindun/refs/heads/main"
 
 # 远程调用子脚本函数
 run_remote_script() {
     local script_name="$1"
-    echo -e "\n${CYAN}正在加载并执行 ${script_name} ...${NC}\n"
-    bash <(curl -sSL "${REPO_URL}/${script_name}")
+    echo -e "\n${CYAN}正在从远程加载并执行 ${script_name} ...${NC}\n"
+    
+    if ! bash <(curl -sSL "${REPO_URL}/${script_name}"); then
+        echo -e "\n${RED}[ERROR] 执行 ${script_name} 过程中发生错误或连接失败！${NC}"
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -45,18 +55,18 @@ get_system_info() {
     # 2. 内核版本
     KERNEL_VERSION=$(uname -r)
 
-    # 3. IP 栈检测 (检查 IPv4 和 IPv6 连通性与地址)
+    # 3. IP 栈检测 (通过双栈 API 检测公网状态)
     IPV4_STATUS="${RED}未检测到${NC}"
     IPV6_STATUS="${RED}未检测到${NC}"
     
     local ip4
-    ip4=$(curl -4 -s --connect-timeout 3 https://api.ipify.org 2>/dev/null)
+    ip4=$(curl -4 -s --connect-timeout 2 https://api.ipify.org 2>/dev/null)
     if [ -n "$ip4" ]; then
         IPV4_STATUS="${GREEN}已连接 (${ip4})${NC}"
     fi
 
     local ip6
-    ip6=$(curl -6 -s --connect-timeout 3 https://api6.ipify.org 2>/dev/null)
+    ip6=$(curl -6 -s --connect-timeout 2 https://api6.ipify.org 2>/dev/null)
     if [ -n "$ip6" ]; then
         IPV6_STATUS="${GREEN}已连接 (${ip6})${NC}"
     fi
@@ -75,15 +85,14 @@ get_system_info() {
     # 4. Mihomo 安装状态与版本检查
     if [ -f "${MIHOMO_DIR}/mihomo" ]; then
         MIHOMO_STATUS="${GREEN}已安装${NC}"
-        # 获取本地 mihomo 版本
-        MIHOMO_VER=$("${MIHOMO_DIR}/mihomo" -v 2>/dev/null | awk '{print $2}' || echo "未知版本")
+        MIHOMO_VER=$("${MIHOMO_DIR}/mihomo" -v 2>/dev/null | awk '{print $2}' || echo "获取失败")
     else
         MIHOMO_STATUS="${RED}未安装${NC}"
         MIHOMO_VER="N/A"
     fi
 
-    # 5. WARP 状态检查 (预留)
-    if [ -d "$WARPS_DIR" ] && systemctl is-active --quiet wg-quick@wgcf 2>/dev/null; then
+    # 5. WARP 状态检查 (预留，后续根据实际安装判断)
+    if systemctl is-active --quiet wg-quick@wgcf 2>/dev/null || ip link show dev wgcf 2>/dev/null | grep -q "UP"; then
         WARP_STATUS="${GREEN}运行中${NC}"
     else
         WARP_STATUS="${YELLOW}未启用${NC}"
@@ -95,19 +104,20 @@ get_system_info() {
 # ------------------------------------------------------------------------------
 show_menu() {
     clear
-    # 每次显示菜单前刷新一次状态
+    echo -e "${CYAN}正在检测系统环境，请稍候...${NC}"
     get_system_info
+    clear
 
     echo -e "${BLUE}========================================================${NC}"
     echo -e "${CYAN}        YinDun Mihomo Server Control Panel               ${NC}"
     echo -e "${BLUE}========================================================${NC}"
-    echo -e " 脚本版本 : ${YELLOW}${SCRIPT_VERSION}${NC}   | 安装路径 : ${CYAN}${BASE_DIR}${NC}"
+    echo -e " 脚本版本 : ${YELLOW}${SCRIPT_VERSION}${NC}   | 根路径   : ${CYAN}${BASE_DIR}${NC}"
     echo -e " 系统发行 : ${OS_INFO}"
     echo -e " 系统内核 : ${KERNEL_VERSION}"
     echo -e " 网络状态 : ${IP_TYPE}"
     echo -e "   ├─ IPv4  : ${IPV4_STATUS}"
     echo -e "   └─ IPv6  : ${IPV6_STATUS}"
-    echo -e " 服务状态 : Mihomo [${MIHOMO_STATUS} - ${MIHOMO_VER}] | WARP [${WARP_STATUS}]"
+    echo -e " 核心状态 : Mihomo [${MIHOMO_STATUS} - ${MIHOMO_VER}] | WARP [${WARP_STATUS}]"
     echo -e "${BLUE}--------------------------------------------------------${NC}"
     echo -e " ${GREEN}1.${NC} 安装/更新 Mihomo 核心 (install.sh)"
     echo -e " ${GREEN}2.${NC} 生成/修改配置文件 (config.sh)"
