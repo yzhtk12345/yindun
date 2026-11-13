@@ -21,7 +21,7 @@ CYAN="\033[36m"
 NC="\033[0m"
 
 # 远程仓库 Base URL (后续改成你的 GitHub Raw 链接)
-REPO_URL="https://raw.githubusercontent.com/你的用户名/你的仓库名/main"
+REPO_URL="https://raw.githubusercontent.com/yzhtk12345/yindun/refs/heads/main"
 
 # 远程调用子脚本函数
 run_remote_script() {
