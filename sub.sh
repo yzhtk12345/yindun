@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：集成高级 Mihomo Fake-IP 与负载均衡模板
+# Description: 纯客户端订阅分发守护进程：修复 Mihomo 模板 YAML 缩进对齐问题
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,7 +148,7 @@ stop_daemon() {
     fi
 }
 
-# 嵌入高级模板的 Python 后端生成函数
+# 修正缩进后的 Python 服务端生成函数
 prepare_python_server() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -241,10 +241,9 @@ def generate_subscriptions():
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
-    # 格式化节点列表供高级 Mihomo 模板使用
-    proxies_list_yaml = "\n".join([f'    - "{n}"' for n in node_names]) if node_names else '    - "DIRECT"'
+    # 严格对齐 6 个空格缩进，完美适配 Mihomo 策略组 YAML 规范
+    proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
 
-    # 完整的高级 Mihomo 客户端配置模板
     mihomo_full_config = f"""port: 7890
 allow-lan: true
 mode: rule
@@ -291,7 +290,7 @@ proxy-groups:
     interval: 300
     strategy: round-robin
     proxies:
-{proxies_list_yaml}
+{proxies_list_6}
 
   - name: 自动选择
     type: url-test
@@ -299,7 +298,7 @@ proxy-groups:
     interval: 300
     tolerance: 50
     proxies:
-{proxies_list_yaml}
+{proxies_list_6}
 
   - name: 🌍选择代理节点
     type: select
@@ -307,7 +306,7 @@ proxy-groups:
       - 负载均衡                                     
       - 自动选择
       - DIRECT
-{proxies_list_yaml}
+{proxies_list_6}
 
 rules:
   - GEOIP,LAN,DIRECT
@@ -319,7 +318,6 @@ rules:
     with open(mi_links_path, "w", encoding="utf-8") as f:
         f.write(mihomo_full_config)
 
-    # Sing-box 专属配置
     selector_outbounds = ["auto", "direct"] + node_names
     singbox_full_config = {
         "log": {"disabled": False, "level": "info", "timestamp": True},
@@ -391,7 +389,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
             with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
-                self.wfile.read(f.read()) # Note: fixed in memory reading
+                self.wfile.write(f.read())
         elif parsed_path.path == '/box':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -467,7 +465,7 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 高级 Mihomo 模板集成完毕，随时可以在客户端一键导入！${NC}"
+    echo -e "${GREEN}[INFO] YAML 缩进已完美修正，现在可以去客户端完美导入了！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
