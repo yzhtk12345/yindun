@@ -24,7 +24,6 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-# 检测系统防火墙类型
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
         echo "ufw"
@@ -37,13 +36,11 @@ detect_firewall() {
     fi
 }
 
-# 清理旧的 YinDun 订阅 Web 端口防火墙规则
 cleanup_old_sub_firewall_rules() {
     local fw_type
     fw_type=$(detect_firewall)
     echo -e "${CYAN}[INFO] 正在清理防火墙中的旧 YinDun 订阅 Web 端口规则...${NC}"
 
-    # 如果有历史记录的端口，优先精准清除
     if [ -f "$PORT_RECORD_FILE" ]; then
         local old_port
         old_port=$(cat "$PORT_RECORD_FILE")
@@ -66,7 +63,6 @@ cleanup_old_sub_firewall_rules() {
         rm -f "$PORT_RECORD_FILE"
     fi
 
-    # 通用防御：通过 UFW 备注清理带 YinDun-Sub 的规则
     if [[ "$fw_type" == "ufw" ]]; then
         while true; do
             local rule_num
@@ -78,7 +74,6 @@ cleanup_old_sub_firewall_rules() {
     fi
 }
 
-# 防火墙开放端口
 manage_firewall_port() {
     local action="$1"
     local port="$2"
@@ -130,26 +125,24 @@ get_web_port() {
     echo "${target_port}"
 }
 
-# 生成所有客户端订阅文件
 generate_all_subscriptions() {
     if [ ! -f "$NODES_DB" ]; then
         echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
         return 1
-    }
+    fi
 
     cat <<EOF > "$MI_LINKS_FILE"
 # YinDun Mihomo Subscription (mi_links.yaml)
 proxies:
 EOF
 
-    cat <<EOF > "$BOX_LINKS_FILE"
-{
-  "outbounds": [
-EOF
+    > "$BOX_LINKS_FILE"
+    echo "{" >> "$BOX_LINKS_FILE"
+    echo "  \"outbounds\": [" >> "$BOX_LINKS_FILE"
 
     > "$ALL_LINKS_FILE"
 
-    local box_items=()
+    local box_snippets=()
 
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
@@ -185,7 +178,7 @@ EOF
       support-x25519mlkem768: false
 EOF
 
-            local box_snippet="    {
+            local box_json_item="    {
       \"type\": \"vless\",
       \"tag\": \"${client_node_name}\",
       \"server\": \"${ip_val}\",
@@ -206,7 +199,7 @@ EOF
         }
       }
     }"
-            box_items+=("$box_snippet")
+            box_snippets+=("$box_json_item")
 
             local encoded_name
             encoded_name=$(echo -n "${client_node_name}" | jq -sRr @uri 2>/dev/null || echo "${client_node_name}")
@@ -215,43 +208,30 @@ EOF
         fi
     done < "$NODES_DB"
 
-    local joined_box_items=""
-    if [ ${#box_items[@]} -gt 0 ]; then
-        (
-          IFS=$',\n'
-          echo "${box_items[*]}"
-        ) > /tmp/yindun_box_items.tmp
-        joined_box_items=$(cat /tmp/yindun_box_items.tmp)
-        rm -f /tmp/yindun_box_items.tmp
+    if [ ${#box_snippets[@]} -gt 0 ]; then
+        local joined_box
+        joined_box=$(printf "%s,\n" "${box_snippets[@]}")
+        joined_box="${joined_box%,*}" # 去掉最后一个多余的逗号
+        echo "$joined_box" >> "$BOX_LINKS_FILE"
     fi
 
-    cat <<EOF >> "$BOX_LINKS_FILE"
-${joined_box_items}
-  ]
-}
-EOF
+    echo "  ]" >> "$BOX_LINKS_FILE"
+    echo "}" >> "$BOX_LINKS_FILE"
 }
 
-# 核心守护主逻辑：清理旧端口 -> 随机分配新端口(10000-20000) -> 写入防火墙 -> 启动 Python Web 服务
 run_web_daemon() {
-    # 1. 自动清理历史旧端口及防火墙残留
     cleanup_old_sub_firewall_rules
-
-    # 2. 生成订阅内容
     generate_all_subscriptions || return 1
 
-    # 3. 在 10000-20000 范围内随机分配可用端口
     local web_port
     web_port=$(get_web_port)
     echo "$web_port" > "$PORT_RECORD_FILE"
 
-    # 4. 动态写入防火墙规则
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
 
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
 
-    # 创建 Python 后端分发脚本
     cat << 'PY_SERVER_EOF' > "${CONFIG_DIR}/sub_server.py"
 import http.server
 import urllib.parse
@@ -304,7 +284,7 @@ PY_SERVER_EOF
 
     echo -e "\n${CYAN}========================================================${NC}"
     echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
-    echo -e "${CYAN}========================================================${NC} "
+    echo -e "${CYAN}========================================================${NC}"
     echo -e "当前服务端口 : ${YELLOW}${web_port}${NC}"
     echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
     echo -e "${CYAN}--------------------------------------------------------${NC}"
@@ -316,7 +296,6 @@ PY_SERVER_EOF
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    # 注册并启用 Systemd 系统服务（实现开机默默自启与后台常驻）
     local systemd_service_file="/etc/systemd/system/yindun-sub.service"
     if [ ! -f "$systemd_service_file" ]; then
         cat <<EOF > "$systemd_service_file"
@@ -340,7 +319,6 @@ EOF
         systemctl enable yindun-sub.service >/dev/null 2>&1
         echo -e "${GREEN}[INFO] 已自动注册 Systemd 服务，并设置为开机默默自启！${NC}"
     else
-        # 如果服务文件已存在，更新其中的端口
         sed -i "s|sub_server.py [0-9]*|sub_server.py ${web_port}|g" "$systemd_service_file"
         systemctl daemon-reload >/dev/null 2>&1
     fi
