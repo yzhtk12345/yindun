@@ -75,7 +75,7 @@ generate_all_subscriptions() {
         echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
         echo -e "${YELLOW}[INFO] 请先运行 config.sh 生成服务端节点！${NC}"
         return 1
-    }
+    fi
 
     # 1. 生成 mi_links.yaml (Mihomo 专属)
     cat <<EOF > "$MI_LINKS_FILE"
@@ -89,7 +89,7 @@ EOF
   "outbounds": [
 EOF
 
-    # 3. 初始化 all_links.txt (V2ray, v2rayN, 虎兕, throne 等通用链接)
+    # 3. 初始化 all_links.txt (通用链接)
     > "$ALL_LINKS_FILE"
 
     local box_items=()
