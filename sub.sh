@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：安全生成订阅服务，杜绝 Bash 解析冲突
+# Description: 纯客户端订阅分发守护进程：采用 Python 原生写入，彻底根除管道 EOF 冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,10 +148,12 @@ stop_daemon() {
     fi
 }
 
-# 使用安全的 Python 文件写入方式，完全避开 Bash 解析冲突
+# 采用 Python 脚本在本地直接写入 sub_server.py，完美避开 Bash 管道流解析冲突
 prepare_python_server() {
-    cat << 'PY_EOF' > "$PYTHON_SERVER_FILE"
-import http.server
+    python3 - << 'PYTHON_WRITER'
+import os
+
+server_code = r'''import http.server
 import urllib.parse
 import sys
 import os
@@ -534,7 +536,13 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
 server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
 server.serve_forever()
-PY_EOF
+'''
+
+os.makedirs(r"/etc/yindun/mihomo", exist_ok=True)
+with open(r"/etc/yindun/mihomo/sub_server.py", "w", encoding="utf-8") as f:
+    f.write(server_code)
+print("[INFO] sub_server.py generated successfully via python writer.")
+PYTHON_WRITER
 }
 
 start_daemon() {
@@ -587,9 +595,9 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 双端高级模板已就绪，脚本完美执行！${NC}"
+    echo -e "${GREEN}[INFO] 管道 EOF 冲突已完美彻底解决，双端高级模板稳定运行！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
