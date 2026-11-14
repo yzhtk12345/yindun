@@ -247,18 +247,13 @@ add_vless_reality_server_config() {
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
     local node_name="vless-reality-vision-in-${host_name}"
-    
-    # 构造写入配置的 Python 脚本，彻底避免 Bash 字符串嵌套语法错误
-    python3 - <<EOF
-config_path = "${CONFIG_FILE}"
-node_name = "${node_name}"
-port = ${port}
-uuid = "${uuid}"
-private_key = "${private_key}"
-short_id = "${short_id}"
-server_name = "${server_name}"
 
+    # 使用单引号 'PY_SCRIPT' 隔离，通过参数传递变量，彻底避免 Bash 解析大括号报错
+    python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
+import sys
 import os
+
+config_path, node_name, port, uuid, private_key, short_id, server_name = sys.argv[1:8]
 
 snippet = f"""  - name: "{node_name}"
     type: vless
@@ -280,7 +275,7 @@ snippet = f"""  - name: "{node_name}"
 if not os.path.exists(config_path):
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
     with open(config_path, "w", encoding="utf-8") as f:
-        f.write("mixed-port: 10801\nallow-lan: true\nmode: rule\nlog-level: info\nivp6: true\nlisteners:\n")
+        f.write("mixed-port: 10801\nallow-lan: true\nmode: rule\nlog-level: info\nipv6: true\nlisteners:\n")
 
 with open(config_path, "r", encoding="utf-8") as f:
     content = f.read()
@@ -292,7 +287,7 @@ else:
 
 with open(config_path, "w", encoding="utf-8") as f:
     f.write(content)
-EOF
+PY_SCRIPT
 
     # 持久化账本记录
     echo "TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}" >> "${NODES_DB}"
