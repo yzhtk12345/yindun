@@ -13,19 +13,16 @@ NC="\033[0m"
 CONFIG_DIR="/etc/yindun/mihomo"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 
-# 订阅文件路径定义
 ALL_LINKS_FILE="${CONFIG_DIR}/all_links.txt"
 BOX_LINKS_FILE="${CONFIG_DIR}/box_links.json"
 MI_LINKS_FILE="${CONFIG_DIR}/mi_links.yaml"
 
-# 生成超长、更乱的高强度安全 Token
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 if [ ! -f "$TOKEN_FILE" ]; then
     openssl rand -hex 32 > "$TOKEN_FILE"
 fi
 SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-# 检查端口占用工具
 check_port_used() {
     local port="$1"
     if command -v ss &>/dev/null; then
@@ -35,7 +32,6 @@ check_port_used() {
     fi
 }
 
-# 获取订阅 Web 服务端口（10000-20000随机或手动）
 get_web_port() {
     echo -e "${CYAN}--------------------------------------------------------${NC}"
     read -p "请选择订阅 Web 服务的端口获取方式 [1. 随机获取(10000-20000) 2. 手动指定] (默认 1): " port_mode_choice
@@ -69,7 +65,6 @@ get_web_port() {
     echo "$target_port"
 }
 
-# 生成所有客户端订阅文件
 generate_all_subscriptions() {
     if [ ! -f "$NODES_DB" ]; then
         echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
@@ -77,19 +72,16 @@ generate_all_subscriptions() {
         return 1
     fi
 
-    # 1. 生成 mi_links.yaml (Mihomo 专属)
     cat <<EOF > "$MI_LINKS_FILE"
 # YinDun Mihomo Subscription (mi_links.yaml)
 proxies:
 EOF
 
-    # 2. 生成 box_links.json (Sing-box 专属)
     cat <<EOF > "$BOX_LINKS_FILE"
 {
   "outbounds": [
 EOF
 
-    # 3. 初始化 all_links.txt (通用链接)
     > "$ALL_LINKS_FILE"
 
     local box_items=()
@@ -110,7 +102,6 @@ EOF
         if [[ "$type_val" == "vless-reality" ]]; then
             local client_node_name="${name_val//-in-/-out-}"
 
-            # 写入 mi_links.yaml
             cat <<EOF >> "$MI_LINKS_FILE"
   - name: "${client_node_name}"
     type: vless
@@ -129,7 +120,6 @@ EOF
       support-x25519mlkem768: false
 EOF
 
-            # 写入 box_links.json 片段
             local box_snippet="    {
       \"type\": \"vless\",
       \"tag\": \"${client_node_name}\",
@@ -153,7 +143,6 @@ EOF
     }"
             box_items+=("$box_snippet")
 
-            # 写入 all_links.txt (通用 vless 链接)
             local encoded_name
             encoded_name=$(echo -n "${client_node_name}" | jq -sRr @uri 2>/dev/null || echo "${client_node_name}")
             local vless_link="vless://${uuid_val}@${ip_val}:${port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${domain_val}&fp=chrome&pbk=${pub_val}&sid=${shortid_val}#${encoded_name}"
@@ -161,7 +150,6 @@ EOF
         fi
     done < "$NODES_DB"
 
-    # 组装 box_links.json 闭合
     local joined_box_items=""
     if [ ${#box_items[@]} -gt 0 ]; then
         (
@@ -179,7 +167,6 @@ ${joined_box_items}
 EOF
 }
 
-# 启动 Web 订阅服务
 start_web_server() {
     generate_all_subscriptions || return 1
 
