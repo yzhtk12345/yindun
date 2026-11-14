@@ -23,14 +23,12 @@ elif command -v yum &>/dev/null; then
     yum install -y curl wget tar unzip unrar rar 2>/dev/null || true
 fi
 
-# 1. 智能识别 CPU 架构及 x86_64 指令集等级 (v1 ~ v4) 避免非法指令崩溃
+# 1. 智能识别 CPU 架构及 x86_64 指令集等级 (v1 ~ v4)
 arch=$(uname -m)
 case "$arch" in
     x86_64)
         MIHOMO_ARCH="amd64"
-        VARIANT="compatible"
-        
-        # 探测 CPU 是否支持 AVX2 (v3) 或 AVX-512 (v4) 以榨干性能
+        VARIANT="v1"
         if grep -q "avx2" /proc/cpuinfo 2>/dev/null; then
             if grep -q "avx512f" /proc/cpuinfo 2>/dev/null; then
                 VARIANT="v4"
@@ -44,11 +42,11 @@ case "$arch" in
         ;;
     aarch64) 
         MIHOMO_ARCH="arm64"
-        VARIANT="compatible"
+        VARIANT="" 
         ;;
     armv7l)  
         MIHOMO_ARCH="armv7"
-        VARIANT="compatible"
+        VARIANT="" 
         ;;
     *) 
         echo -e "${RED}[ERROR] 不支持的 CPU 架构: $arch${NC}"
@@ -56,62 +54,60 @@ case "$arch" in
         ;;
 esac
 
-echo -e "${CYAN}[2/5] 正在准备下载 Mihomo 核心 (架构: ${MIHOMO_ARCH}, 优化级: ${VARIANT})...${NC}"
-
-# 使用官方静态重定向直链，确保 100% 能够下载成功
-DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-${MIHOMO_ARCH}-${VARIANT}.tar.gz"
-
-# 如果指定变体下载失败，自动回退到 compatible 兼容版
-if ! curl --output /dev/null --silent --head --fail "$DOWNLOAD_URL"; then
-    echo -e "${YELLOW}[WARN] 优化版下载链接不可用，自动切换为 compatible 兼容版...${NC}"
-    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-${MIHOMO_ARCH}-compatible.tar.gz"
-fi
-
-# 获取远程版本 Tag 用于比对
+echo -e "${CYAN}[2/5] 正在通过 GitHub 获取最新版本信息...${NC}"
 API_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 LATEST_TAG=$(curl -sSL "$API_URL" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
-[ -z "$LATEST_TAG" ] && LATEST_TAG="latest"
 
-# 2. 版本比对与交互逻辑
+if [ -z "$LATEST_TAG" ]; then
+    echo -e "${RED}[ERROR] 获取最新版本号失败！${NC}"
+    exit 1
+fi
+echo -e "远程最新版本: ${GREEN}${LATEST_TAG}${NC}"
+
+# 动态拼接官方 .gz 直链
+if [ -n "$VARIANT" ] && [ "$VARIANT" != "v1" ]; then
+    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/mihomo-linux-${MIHOMO_ARCH}-${VARIANT}-${LATEST_TAG}.gz"
+else
+    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/mihomo-linux-${MIHOMO_ARCH}-${LATEST_TAG}.gz"
+fi
+
+# 兜底降级
+if ! curl --output /dev/null --silent --head --fail "$DOWNLOAD_URL"; then
+    echo -e "${YELLOW}[WARN] 优化版下载链接不存在，自动切换为标准版...${NC}"
+    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/${LATEST_TAG}/mihomo-linux-${MIHOMO_ARCH}-${LATEST_TAG}.gz"
+fi
+
+# 版本比对与升级逻辑
 if [ -f "${MIHOMO_DIR}/mihomo" ]; then
     LOCAL_VER=$("${MIHOMO_DIR}/mihomo" -v 2>/dev/null | awk '{print $2}')
-    echo -e "当前本地已安装版本: ${YELLOW}${LOCAL_VER}${NC}"
-    echo -e "远程获取最新版本: ${CYAN}${LATEST_TAG}${NC}"
+    echo -e "当前本地版本: ${YELLOW}${LOCAL_VER}${NC}"
     
     if [[ "$LOCAL_VER" == "$LATEST_TAG" ]]; then
-        read -p "当前已是最新版，是否需要覆盖重新安装？[y/N]: " choice
+        read -p "当前已是最新版，是否强制重新覆盖安装？[y/N]: " choice
         [[ "$choice" != "y" && "$choice" != "Y" ]] && echo "已取消安装。" && exit 0
     else
-        echo -e "${GREEN}检测到新版本，准备开始升级...${NC}"
+        echo -e "${GREEN}检测到新版本，开始执行平滑升级...${NC}"
     fi
 else
-    echo -e "${GREEN}本地未检测到 Mihomo，开始全新安装...${NC}"
+    echo -e "${GREEN}本地未安装 Mihomo，开始全新安装...${NC}"
 fi
 
 # 3. 下载与解压
 echo -e "${CYAN}[3/5] 正在下载核心压缩包...${NC}"
-rm -f "${MIHOMO_DIR}/mihomo.tar.gz"
-curl -L -o "${MIHOMO_DIR}/mihomo.tar.gz" "$DOWNLOAD_URL"
+rm -f "${MIHOMO_DIR}/mihomo.gz" "${MIHOMO_DIR}/mihomo"
+curl -L -o "${MIHOMO_DIR}/mihomo.gz" "$DOWNLOAD_URL"
 
-# 检查文件大小是否异常（小于 1MB 说明下载失败或超时）
-if [ ! -s "${MIHOMO_DIR}/mihomo.tar.gz" ] || [ $(stat -c%s "${MIHOMO_DIR}/mihomo.tar.gz" 2>/dev/null || stat -f%z "${MIHOMO_DIR}/mihomo.tar.gz" 2>/dev/null) -lt 1048576 ]; then
-    echo -e "${RED}[ERROR] 下载文件大小异常或连接超时，请检查网络！${NC}"
+if [ ! -s "${MIHOMO_DIR}/mihomo.gz" ]; then
+    echo -e "${RED}[ERROR] 下载文件失败或为空！${NC}"
     exit 1
 fi
 
 echo -e "${CYAN}正在解压核心文件...${NC}"
-tar -xzf "${MIHOMO_DIR}/mihomo.tar.gz" -C "${MIHOMO_DIR}"
-
-# 动态寻找解压出来的二进制文件并重命名
-UNZIPPED_BIN=$(find "${MIHOMO_DIR}" -maxdepth 1 -type f -name "mihomo-linux-*" | head -n 1)
-if [ -n "$UNZIPPED_BIN" ]; then
-    mv "$UNZIPPED_BIN" "${MIHOMO_DIR}/mihomo"
-fi
-
+gunzip -f "${MIHOMO_DIR}/mihomo.gz"
+mv "${MIHOMO_DIR}/mihomo"* "${MIHOMO_DIR}/mihomo" 2>/dev/null || true
 chmod +x "${MIHOMO_DIR}/mihomo"
-rm -f "${MIHOMO_DIR}/mihomo.tar.gz"
 
-# 4. 配置 Systemd 服务（实现开机自启与异常重启）
+# 4. 配置 Systemd 服务（实现开机自启、崩溃自动重启）
 echo -e "${CYAN}[4/5] 正在配置 Systemd 服务守护进程（支持开机自启与崩溃重启）...${NC}"
 cat <<EOF > /etc/systemd/system/mihomo.service
 [Unit]
@@ -143,11 +139,11 @@ if systemctl is-active --quiet mihomo; then
     echo -e "\n${GREEN}========================================================${NC}"
     echo -e "${GREEN}  恭喜！Mihomo 核心安装并成功运行！${NC}"
     echo -e "${GREEN}  当前版本 : ${RUN_VER}${NC}"
-    echo -e "${GREEN}  指令集优化: ${VARIANT}${NC}"
+    echo -e "${GREEN}  指令集优化: ${VARIANT:-standard}${NC}"
     echo -e "${GREEN}  安装路径 : ${MIHOMO_DIR}/mihomo${NC}"
     echo -e "${GREEN}  服务状态 : 运行中 (Systemd 守护 & 开机自启已就绪)${NC}"
     echo -e "${GREEN}========================================================${NC}"
 else
-    echo -e "\n${RED}[ERROR] Mihomo 启动失败！请检查日志：journalctl -u mihomo -e${NC}"
+    echo -e "\n${RED}[ERROR] Mihomo 启动失败！请检查系统日志：journalctl -u mihomo -e${NC}"
     exit 1
 fi
