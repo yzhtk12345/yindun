@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Manager (install.sh)
-# Description: 安装常用工具、解压套件，并通过 GitHub API 智能获取并安装 Mihomo 核心
+# Description: 安装常用工具、解压套件，智能探测 CPU 指令集并自动安装/升级 Mihomo
 # ==============================================================================
 
 # 颜色定义
@@ -23,30 +23,54 @@ elif command -v yum &>/dev/null; then
     yum install -y curl wget tar unzip unrar rar 2>/dev/null || true
 fi
 
-# 1. 识别 CPU 架构
+# 1. 智能识别 CPU 架构及 x86_64 指令集等级 (v1 ~ v4) 避免非法指令崩溃
 arch=$(uname -m)
 case "$arch" in
-    x86_64)  MIHOMO_ARCH="amd64" ;;
-    aarch64) MIHOMO_ARCH="arm64" ;;
-    armv7l)  MIHOMO_ARCH="armv7" ;;
-    *) echo -e "${RED}[ERROR] 不支持的 CPU 架构: $arch${NC}"; exit 1 ;;
+    x86_64)
+        MIHOMO_ARCH="amd64"
+        VARIANT="compatible"
+        
+        # 探测 CPU 是否支持 AVX2 (v3) 或 AVX-512 (v4) 以榨干性能
+        if grep -q "avx2" /proc/cpuinfo 2>/dev/null; then
+            if grep -q "avx512f" /proc/cpuinfo 2>/dev/null; then
+                VARIANT="v4"
+            else
+                VARIANT="v3"
+            fi
+        elif grep -q "sse4_2" /proc/cpuinfo 2>/dev/null; then
+            VARIANT="v2"
+        fi
+        echo -e "${CYAN}检测到 x86_64 CPU，已自动匹配最优指令集版本: ${YELLOW}${VARIANT}${NC}"
+        ;;
+    aarch64) 
+        MIHOMO_ARCH="arm64"
+        VARIANT="compatible"
+        ;;
+    armv7l)  
+        MIHOMO_ARCH="armv7"
+        VARIANT="compatible"
+        ;;
+    *) 
+        echo -e "${RED}[ERROR] 不支持的 CPU 架构: $arch${NC}"
+        exit 1 
+        ;;
 esac
 
-echo -e "${CYAN}[2/5] 正在通过 GitHub API 获取 Mihomo 最新版下载链接 (${MIHOMO_ARCH})...${NC}"
+echo -e "${CYAN}[2/5] 正在准备下载 Mihomo 核心 (架构: ${MIHOMO_ARCH}, 优化级: ${VARIANT})...${NC}"
 
-# 通过 GitHub API 过滤并提取对应架构的 .tar.gz 下载直链
-API_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-DOWNLOAD_URL=$(curl -sSL "$API_URL" | grep "browser_download_url" | grep "linux-${MIHOMO_ARCH}" | grep -E "compatible.*\.tar\.gz|\.tar\.gz" | head -n 1 | cut -d '"' -f 4)
+# 使用官方静态重定向直链，确保 100% 能够下载成功
+DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-${MIHOMO_ARCH}-${VARIANT}.tar.gz"
 
-if [ -z "$DOWNLOAD_URL" ]; then
-    echo -e "${RED}[ERROR] 无法获取 Mihomo 下载链接，请检查网络或 GitHub API 限制！${NC}"
-    exit 1
+# 如果指定变体下载失败，自动回退到 compatible 兼容版
+if ! curl --output /dev/null --silent --head --fail "$DOWNLOAD_URL"; then
+    echo -e "${YELLOW}[WARN] 优化版下载链接不可用，自动切换为 compatible 兼容版...${NC}"
+    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-${MIHOMO_ARCH}-compatible.tar.gz"
 fi
 
-echo -e "获取到直链: ${GREEN}${DOWNLOAD_URL}${NC}"
-
 # 获取远程版本 Tag 用于比对
-LATEST_TAG=$(curl -sSL "$API_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+API_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+LATEST_TAG=$(curl -sSL "$API_URL" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+[ -z "$LATEST_TAG" ] && LATEST_TAG="latest"
 
 # 2. 版本比对与交互逻辑
 if [ -f "${MIHOMO_DIR}/mihomo" ]; then
@@ -66,10 +90,12 @@ fi
 
 # 3. 下载与解压
 echo -e "${CYAN}[3/5] 正在下载核心压缩包...${NC}"
+rm -f "${MIHOMO_DIR}/mihomo.tar.gz"
 curl -L -o "${MIHOMO_DIR}/mihomo.tar.gz" "$DOWNLOAD_URL"
 
-if [ ! -s "${MIHOMO_DIR}/mihomo.tar.gz" ]; then
-    echo -e "${RED}[ERROR] 下载文件为空或下载失败！${NC}"
+# 检查文件大小是否异常（小于 1MB 说明下载失败或超时）
+if [ ! -s "${MIHOMO_DIR}/mihomo.tar.gz" ] || [ $(stat -c%s "${MIHOMO_DIR}/mihomo.tar.gz" 2>/dev/null || stat -f%z "${MIHOMO_DIR}/mihomo.tar.gz" 2>/dev/null) -lt 1048576 ]; then
+    echo -e "${RED}[ERROR] 下载文件大小异常或连接超时，请检查网络！${NC}"
     exit 1
 fi
 
@@ -117,6 +143,7 @@ if systemctl is-active --quiet mihomo; then
     echo -e "\n${GREEN}========================================================${NC}"
     echo -e "${GREEN}  恭喜！Mihomo 核心安装并成功运行！${NC}"
     echo -e "${GREEN}  当前版本 : ${RUN_VER}${NC}"
+    echo -e "${GREEN}  指令集优化: ${VARIANT}${NC}"
     echo -e "${GREEN}  安装路径 : ${MIHOMO_DIR}/mihomo${NC}"
     echo -e "${GREEN}  服务状态 : 运行中 (Systemd 守护 & 开机自启已就绪)${NC}"
     echo -e "${GREEN}========================================================${NC}"
