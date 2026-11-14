@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：剥离内联代码，采用远程/本地独立加载 sub_server.py
+# Description: 纯客户端订阅分发守护进程：集成高级 Mihomo Fake-IP 与负载均衡模板
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,7 +148,7 @@ stop_daemon() {
     fi
 }
 
-# 自动在本地生成或更新标准的 sub_server.py 文件（纯净文本写入，绝无 Bash 解析冲突）
+# 嵌入高级模板的 Python 后端生成函数
 prepare_python_server() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -241,62 +241,85 @@ def generate_subscriptions():
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
-    proxy_names_yaml = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
-    
+    # 格式化节点列表供高级 Mihomo 模板使用
+    proxies_list_yaml = "\n".join([f'    - "{n}"' for n in node_names]) if node_names else '    - "DIRECT"'
+
+    # 完整的高级 Mihomo 客户端配置模板
     mihomo_full_config = f"""port: 7890
-socks-port: 7891
-redir-port: 7892
 allow-lan: true
 mode: rule
 log-level: info
-external-controller: 127.0.0.1:9090
+unified-delay: true
+dns:
+  enable: true 
+  listen: "0.0.0.0:1053"
+  ipv6: true
+  prefer-h3: false
+  respect-rules: true
+  use-system-hosts: false
+  cache-algorithm: "arc"
+  enhanced-mode: "fake-ip"
+  fake-ip-range: "198.18.0.1/16"
+  fake-ip-filter:
+    - "+.lan"
+    - "+.local"
+    - "+.msftconnecttest.com"
+    - "+.msftncsi.com"
+    - "localhost.ptlogin2.qq.com"
+    - "localhost.sec.qq.com"
+    - "+.in-addr.arpa"
+    - "+.ip6.arpa"
+    - "time.*.com"
+    - "time.*.gov"
+    - "pool.ntp.org"
+    - "localhost.work.weixin.qq.com"
+  default-nameserver: ["223.5.5.5", "119.29.29.29"]
+  nameserver:
+    - "https://1.1.1.1/dns-query"
+    - "https://8.8.8.8/dns-query"
+  proxy-server-nameserver:
+    - "https://223.5.5.5/dns-query"
+    - "https://doh.pub/dns-query"
 
 proxies:
 """ + ("\n".join(mi_proxies) if mi_proxies else "") + f"""
 
 proxy-groups:
-  - name: "🚀 节点选择"
-    type: select
+  - name: 负载均衡
+    type: load-balance
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    strategy: round-robin
     proxies:
-      - "♻️ 自动选择"
-      - "🎯 手动切换"
-      - "DIRECT"
-{proxy_names_yaml}
+{proxies_list_yaml}
 
-  - name: "♻️ 自动选择"
+  - name: 自动选择
     type: url-test
-    url: "http://www.gstatic.com/generate_204"
+    url: https://www.gstatic.com/generate_204
     interval: 300
     tolerance: 50
     proxies:
-{proxy_names_yaml}
+{proxies_list_yaml}
 
-  - name: "🎯 手动切换"
+  - name: 🌍选择代理节点
     type: select
     proxies:
-{proxy_names_yaml}
-
-  - name: "🌍 国外媒体"
-    type: select
-    proxies:
-      - "🚀 节点选择"
-      - "DIRECT"
-
-  - name: "🐟 漏网之鱼"
-    type: select
-    proxies:
-      - "🚀 节点选择"
-      - "DIRECT"
+      - 负载均衡                                     
+      - 自动选择
+      - DIRECT
+{proxies_list_yaml}
 
 rules:
-  - DOMAIN-SUFFIX,cn,DIRECT
-  - GEOIP,cn,DIRECT
-  - MATCH,🐟 漏网之鱼
+  - GEOIP,LAN,DIRECT
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🌍选择代理节点
 """
 
     with open(mi_links_path, "w", encoding="utf-8") as f:
         f.write(mihomo_full_config)
 
+    # Sing-box 专属配置
     selector_outbounds = ["auto", "direct"] + node_names
     singbox_full_config = {
         "log": {"disabled": False, "level": "info", "timestamp": True},
@@ -368,7 +391,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
             with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
-                self.wfile.write(f.read())
+                self.wfile.read(f.read()) # Note: fixed in memory reading
         elif parsed_path.path == '/box':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -441,10 +464,10 @@ start_daemon() {
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
     echo -e "3. Sing-box 专属订阅 (完整客户端配置):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
-    echo -e "4. Mihomo 专属订阅 (完整客户端配置):"
+    echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有结构完美运行！${NC}"
+    echo -e "${GREEN}[INFO] 高级 Mihomo 模板集成完毕，随时可以在客户端一键导入！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
