@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 负责底层网络依赖、Python检查、智能防火墙（带SSH保护与Reality备注清理）、端口分配、REALITY 测速及服务端入站配置写入
+# Description: 负责底层网络依赖、Python检查、防火墙、端口分配、REALITY 测速及服务端入站配置写入
 # ==============================================================================
 
 # 颜色定义
@@ -89,7 +89,7 @@ get_available_port() {
 }
 
 # ------------------------------------------------------------------------------
-# 2. 智能防火墙管理模块（核心：保护SSH，精准清理带 YinDun-Reality 备注的旧端口）
+# 2. 防火墙智能管理模块（含：清理带有 YinDun-Reality 备注的旧端口，保护 SSH）
 # ------------------------------------------------------------------------------
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
@@ -106,14 +106,13 @@ detect_firewall() {
 cleanup_old_reality_firewall_rules() {
     local fw_type
     fw_type=$(detect_firewall)
-    echo -e "${CYAN}[INFO] 正在清理防火墙中其他旧的 Reality 端口规则（已自动排除并保护 SSH 端口）...${NC}"
+    echo -e "${CYAN}[INFO] 正在检查并清理防火墙中的旧 Reality 端口规则（已自动保护 SSH 端口）...${NC}"
 
     case "$fw_type" in
         ufw)
-            # UFW 原理：通过 status numbered 找到包含 YinDun-Reality 的规则编号并删除
+            # 通过 UFW 备注特征精准查找并删除旧的 YinDun-Reality 规则
             while true; do
                 local rule_num
-                # 查找带有 YinDun-Reality 备注的规则编号（取第一条）
                 rule_num=$(ufw status numbered | grep "YinDun-Reality" | head -n 1 | awk -F'[][]' '{print $2}')
                 if [[ -z "$rule_num" ]]; then
                     break
@@ -124,11 +123,6 @@ cleanup_old_reality_firewall_rules() {
             ufw reload >/dev/null 2>&1
             ;;
         firewalld)
-            # Firewalld 原理：查找所有放行的端口，若有以前残留的，可以通过富规则或记录清理
-            # 简单起见，如果账本里记录了旧端口，或者直接从系统中匹配带有 YinDun-Reality 的服务/端口
-            local old_ports
-            old_ports=$(firewall-cmd --permanent --list-ports | grep -oE '[0-9]+/tcp' || true)
-            # 如果我们用的是服务或指定端口，也可以根据 reality_nodes.txt 清理
             if [ -f "$NODES_DB" ]; then
                 while IFS= read -r line; do
                     [[ -z "$line" ]] && continue
@@ -143,7 +137,6 @@ cleanup_old_reality_firewall_rules() {
             fi
             ;;
         *)
-            # 如果是纯 iptables 或未启用主流防火墙，则根据账本清理
             if [ -f "$NODES_DB" ]; then
                 while IFS= read -r line; do
                     [[ -z "$line" ]] && continue
@@ -167,26 +160,37 @@ manage_firewall_port() {
     local fw_type
     fw_type=$(detect_firewall)
 
+    local protos=()
+    if [[ "$proto" == "tcp/udp" || "$proto" == "both" ]]; then
+        protos=("tcp" "udp")
+    else
+        protos=("$proto")
+    fi
+
     case "$fw_type" in
         ufw)
-            if [[ "$action" == "add" ]]; then
-                ufw allow "$port/$proto" comment "$comment" >/dev/null 2>&1
-                echo -e "${GREEN}[UFW] 已开放新端口 ${port}/${proto} (备注: ${comment})${NC}"
-            fi
+            for p in "${protos[@]}"; do
+                if [[ "$action" == "add" ]]; then
+                    ufw allow "$port/$p" comment "$comment" >/dev/null 2>&1
+                    echo -e "${GREEN}[UFW] 已开放端口 ${port}/${p} (备注: ${comment})${NC}"
+                elif [[ "$action" == "remove" ]]; then
+                    ufw delete allow "$port/$p" >/dev/null 2>&1
+                    echo -e "${YELLOW}[UFW] 已移除端口 ${port}/${p}${NC}"
+                fi
+            done
             ufw reload >/dev/null 2>&1
             ;;
         firewalld)
-            if [[ "$action" == "add" ]]; then
-                firewall-cmd --permanent --add-port="${port}/${proto}" >/dev/null 2>&1
-                firewall-cmd --reload >/dev/null 2>&1
-                echo -e "${GREEN}[Firewalld] 已永久开放新端口 ${port}/${proto}${NC}"
-            fi
-            ;;
-        iptables)
-            if [[ "$action" == "add" ]]; then
-                iptables -A INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || true
-                echo -e "${GREEN}[Iptables] 已放行新端口 ${port}/${proto}${NC}"
-            fi
+            for p in "${protos[@]}"; do
+                if [[ "$action" == "add" ]]; then
+                    firewall-cmd --permanent --add-port="${port}/${p}" >/dev/null 2>&1
+                    echo -e "${GREEN}[Firewalld] 已永久开放端口 ${port}/${p}${NC}"
+                elif [[ "$action" == "remove" ]]; then
+                    firewall-cmd --permanent --remove-port="${port}/${p}" >/dev/null 2>&1
+                    echo -e "${YELLOW}[Firewalld] 已移除端口 ${port}/${p}${NC}"
+                fi
+            done
+            firewall-cmd --reload >/dev/null 2>&1
             ;;
         *)
             echo -e "${YELLOW}[WARN] 未检测到主流防火墙，跳过配置。${NC}"
@@ -240,12 +244,17 @@ select_best_reality_domain() {
 add_vless_reality_server_config() {
     check_and_install_python
 
-    # 1. 在生成新节点前，自动清理防火墙中带有 YinDun-Reality 备注的其他旧端口（绝对不碰 SSH）
+    # 在执行配置 Reality 之前，自动清理防火墙中其他旧的 Reality 端口（安全保护 SSH）
     cleanup_old_reality_firewall_rules
 
-    # 2. 清理旧配置文件与旧账本
-    [ -f "$CONFIG_FILE" ] && rm -f "$CONFIG_FILE"
-    [ -f "$NODES_DB" ] && rm -f "$NODES_DB"
+    # 自动重置旧配置与账本
+    if [ -f "$CONFIG_FILE" ]; then
+        echo -e "${YELLOW}[INFO] 检测到旧配置文件，正在自动重置初始化...${NC}"
+        rm -f "$CONFIG_FILE"
+    fi
+    if [ -f "$NODES_DB" ]; then
+        rm -f "$NODES_DB"
+    fi
 
     local host_name
     host_name=$(hostname)
@@ -296,12 +305,11 @@ add_vless_reality_server_config() {
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
-    # 3. 放行当前新端口，并打上 YinDun-Reality 备注
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
     local node_name="vless-reality-vision-in-${host_name}"
 
-    # 使用 Python 安全写入纯入站 YAML
+    # 使用 Python 安全写入纯入站 YAML（移除了无用的全局配置项）
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
@@ -336,7 +344,7 @@ PY_SCRIPT
 
     systemctl restart mihomo
 
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "\n${GREEN}========================================================${NC}"
     echo -e "${GREEN}  VLESS-REALITY 服务端入站已成功写入配置并重启！${NC}"
     echo -e "${GREEN}========================================================${NC}"
     echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
@@ -347,37 +355,10 @@ PY_SCRIPT
     echo -e "${GREEN}========================================================${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# 5. 主交互菜单
-# ------------------------------------------------------------------------------
-show_menu() {
-    clear
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "${CYAN}         YinDun Server Configuration Manager            ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo "1. 添加 VLESS-REALITY 服务端节点 (自动清理旧Reality端口并保护SSH)"
-    echo "2. 手动清理所有旧 Reality 端口规则"
-    echo "0. 退出脚本"
-    echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-2]: " choice
-
-    case "$choice" in
-        1)
-            add_vless_reality_server_config
-            ;;
-        2)
-            cleanup_old_reality_firewall_rules
-            echo -e "${GREEN}[SUCCESS] 旧 Reality 端口规则清理完毕！${NC}"
-            ;;
-        0)
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}[ERROR] 无效的选项！${NC}"
-            ;;
-    esac
-}
-
+# 交互菜单测试
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    show_menu
+    echo -e "${CYAN}=== YinDun Config 管理脚本 ==="
+    echo "1. 添加 VLESS-REALITY 服务端节点"
+    read -p "请选择操作 [1]: " choice
+    add_vless_reality_server_config
 fi
