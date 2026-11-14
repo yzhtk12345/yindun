@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：后台静默运行、防火墙联动、Python原生JSON序列化
+# Description: 纯客户端订阅分发守护进程：修复订阅路由、根路径直接响应、持久化固化
 # ==============================================================================
 
 RED="\033[31m"
@@ -15,8 +15,8 @@ NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 PID_FILE="${CONFIG_DIR}/sub_server.pid"
 PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
-
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
+
 if [ ! -f "$TOKEN_FILE" ]; then
     openssl rand -hex 32 > "$TOKEN_FILE"
 fi
@@ -56,7 +56,6 @@ cleanup_old_sub_firewall_rules() {
                     ;;
             esac
         fi
-        rm -f "$PORT_RECORD_FILE"
     fi
 }
 
@@ -99,13 +98,47 @@ check_port_used() {
 
 get_web_port() {
     local target_port=""
-    while true; do
-        target_port=$((RANDOM % 10001 + 10000))
-        if ! check_port_used "$target_port"; then
-            break
+    
+    if [ -f "$PORT_RECORD_FILE" ]; then
+        target_port=$(cat "$PORT_RECORD_FILE")
+        if [[ "$target_port" =~ ^[0-9]+$ ]] && [ "$target_port" -ge 10000 ] && [ "$target_port" -le 20000 ]; then
+            echo -e "${CYAN}[INFO] 检测到已固化的订阅服务端口: ${target_port}${NC}"
+            read -p "是否需要重新生成随机端口和重置 Token？[y/N]: " reset_choice
+            if [[ "$reset_choice" =~ ^[Yy]$ ]]; then
+                cleanup_old_sub_firewall_rules
+                rm -f "$PORT_RECORD_FILE"
+                rm -f "$TOKEN_FILE"
+                openssl rand -hex 32 > "$TOKEN_FILE"
+                SUB_TOKEN=$(cat "$TOKEN_FILE")
+                target_port=""
+            fi
+        fi
+    fi
+
+    if [ -z "$target_port" ]; then
+        while true; do
+            target_port=$((RANDOM % 10001 + 10000))
+            if ! check_port_used "$target_port"; then
+                break
+            fi
+        done
+        echo "$target_port" > "$PORT_RECORD_FILE"
+        echo -e "${GREEN}[INFO] 已为您新分配并固化订阅服务端口: ${target_port}${NC}"
+    fi
+
+    echo "${target_port}"
+}
+
+get_public_ip() {
+    local ip=""
+    for service in "https://api.ipify.org" "https://ip.sb" "https://icanhazip.com"; do
+        ip=$(curl -s4 --max-time 3 "$service" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
         fi
     done
-    echo "${target_port}"
+    echo "YOUR_SERVER_IP"
 }
 
 stop_daemon() {
@@ -118,7 +151,6 @@ stop_daemon() {
         fi
         rm -f "$PID_FILE"
     fi
-    cleanup_old_sub_firewall_rules
 }
 
 create_python_server_script() {
@@ -128,6 +160,7 @@ import urllib.parse
 import sys
 import os
 import json
+import base64
 
 port = int(sys.argv[1])
 token = sys.argv[2]
@@ -236,7 +269,17 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
         generate_subscriptions()
 
-        if parsed_path.path == '/all':
+        # 根路径 '/' 或 '/all' 默认直接返回 Base64 编码的通用订阅，完美适配绝大多数客户端
+        if parsed_path.path in ['/', '/all']:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
+                raw_data = f.read()
+                # 客户端订阅通常支持 Base64，这里我们自动转换为 Base64 编码输出
+                encoded_data = base64.b64encode(raw_data)
+                self.wfile.write(encoded_data)
+        elif parsed_path.path == '/raw':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
@@ -279,12 +322,11 @@ start_daemon() {
 
     local web_port
     web_port=$(get_web_port)
-    echo "$web_port" > "$PORT_RECORD_FILE"
 
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
 
     local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
+    server_ip=$(get_public_ip)
 
     cd "${CONFIG_DIR}" || exit
     nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
@@ -295,19 +337,21 @@ start_daemon() {
     echo -e "${GREEN}  YinDun 客户端订阅守护进程已在后台成功启动！${NC}"
     echo -e "${CYAN}========================================================${NC}"
     echo -e "服务进程 PID : ${YELLOW}${new_pid}${NC}"
-    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC}"
-    echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
+    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固化)"
+    echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC} (已持久化固化)"
     echo -e "${CYAN}--------------------------------------------------------${NC}"
-    echo -e "1. 通用订阅 (all_links.txt):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/all?token=${SUB_TOKEN}${NC}"
-    echo -e "2. Sing-box 专属订阅 (box_links.json):"
+    echo -e "1. 主订阅链接 (支持直接作为客户端订阅源导入，返回 Base64):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
+    echo -e "2. 原文明文链接 (all_links.txt):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
+    echo -e "3. Sing-box 专属订阅 (box_links.json):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
+    echo -e "4. Mihomo 专属订阅 (mi_links.yaml):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 服务已在后台平稳运行，脚本已安全退出！${NC}"
+    echo -e "${GREEN}[INFO] 订阅地址已优化升级，完美兼容各大代理客户端！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
