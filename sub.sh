@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：集成高级 Mihomo 与 Sing-box 客户端配置模板
+# Description: 纯客户端订阅分发守护进程：安全生成订阅服务，杜绝 Bash 解析冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,9 +148,9 @@ stop_daemon() {
     fi
 }
 
-# 嵌入高级 Mihomo & Sing-box 模板的 Python 后端生成函数
+# 使用安全的 Python 文件写入方式，完全避开 Bash 解析冲突
 prepare_python_server() {
-    cat << 'EOF' > "$PYTHON_SERVER_FILE"
+    cat << 'PY_EOF' > "$PYTHON_SERVER_FILE"
 import http.server
 import urllib.parse
 import sys
@@ -197,7 +197,6 @@ def generate_subscriptions():
 
                     node_names.append(name)
 
-                    # Mihomo 节点
                     mi_proxy = f"""  - name: "{name}"
     type: vless
     server: {ip}
@@ -215,7 +214,6 @@ def generate_subscriptions():
       support-x25519mlkem768: false"""
                     mi_proxies.append(mi_proxy)
 
-                    # Sing-box 节点
                     box_dict = {
                         "type": "vless",
                         "tag": name,
@@ -243,9 +241,6 @@ def generate_subscriptions():
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
-    # -------------------------------------------------------------
-    # 1. 生成 Mihomo YAML 配置文件
-    # -------------------------------------------------------------
     proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
 
     mihomo_full_config = f"""port: 7890
@@ -321,10 +316,6 @@ rules:
     with open(mi_links_path, "w", encoding="utf-8") as f:
         f.write(mihomo_full_config)
 
-    # -------------------------------------------------------------
-    # 2. 生成 Sing-box JSON 配置文件 (严格采用你提供的高级模板)
-    # -------------------------------------------------------------
-    # 动态构建 selector 和 urltest 的 outbounds 列表
     selector_outbounds = ["auto"] + node_names if node_names else ["direct"]
     auto_outbounds = node_names if node_names else ["direct"]
 
@@ -415,7 +406,7 @@ rules:
                 "type": "direct",
                 "tag": "direct"
             }
-        ] + box_outbounds,  # 自动将所有生成的真实节点追加到 outbounds 中
+        ] + box_outbounds,
         "route": {
             "default_http_client": "rule-set-direct",
             "default_domain_resolver": "dns-cn",
@@ -543,7 +534,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
 server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
 server.serve_forever()
-EOF
+PY_EOF
 }
 
 start_daemon() {
@@ -591,12 +582,12 @@ start_daemon() {
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
     echo -e "2. 原文明文链接 (all_links.txt):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Sing-box 专属订阅 (高级 Fake-IP + 自动测速模板):"
+    echo -e "3. Sing-box 专属订阅 (高级 Fake-IP 客户端配置):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
     echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] Sing-box 高级模板集成完毕，双端均已完美适配！${NC}"
+    echo -e "${GREEN}[INFO] 双端高级模板已就绪，脚本完美执行！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
