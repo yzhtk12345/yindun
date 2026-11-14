@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：绝对干净的端口获取与持久化
+# Description: 纯客户端订阅分发守护进程：彻底独立 Python 文件，杜绝一切 Bash 语法冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -119,7 +119,6 @@ get_web_port() {
         echo -e "${GREEN}[INFO] 已为您新分配并固化订阅服务端口: ${target_port}${NC}" >&2
     fi
 
-    # 仅输出纯数字
     echo "$target_port"
 }
 
@@ -147,8 +146,10 @@ stop_daemon() {
     fi
 }
 
+# 采用纯粹、绝对独立的 Python 脚本写入方式，避开任何 Bash 语法冲突
 create_python_server_script() {
-    cat << 'EOF' > "$PYTHON_SERVER_FILE"
+    mkdir -p "$CONFIG_DIR"
+    cat << 'PYEOF' > "$PYTHON_SERVER_FILE"
 import http.server
 import urllib.parse
 import sys
@@ -282,7 +283,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
 server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
 server.serve_forever()
-EOF
+PYEOF
 }
 
 start_daemon() {
@@ -298,7 +299,6 @@ start_daemon() {
         openssl rand -hex 32 > "$TOKEN_FILE"
     fi
 
-    # 清空管道变量污染，严格提取纯数字端口
     local raw_port
     raw_port=$(get_web_port)
     local web_port
@@ -324,7 +324,7 @@ start_daemon() {
     echo -e "${GREEN}  YinDun 客户端订阅守护进程已在后台成功启动！${NC}"
     echo -e "${CYAN}========================================================${NC}"
     echo -e "服务进程 PID : ${YELLOW}${new_pid}${NC}"
-    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固화)"
+    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固化)"
     echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
     echo -e "${CYAN}--------------------------------------------------------${NC}"
     echo -e "1. 主订阅链接 (支持直接作为客户端订阅源导入，返回 Base64):"
@@ -339,6 +339,6 @@ start_daemon() {
     echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有输出已完美对齐！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
