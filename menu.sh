@@ -136,7 +136,7 @@ show_menu() {
         4) run_remote_script "sub.sh" ;;
         4) run_remote_script "bbr.sh" ;;
         6) run_remote_script "warp.sh" ;;
-        0) echo -e "${GREEN}感谢使用，再见！${NC}"; exit 0 ;;
+        0) echo -e "${GREEN}感谢使用，再见！${NC}"; exec bash exit 0 ;;
         *) echo -e "${RED}无效的选项，请重新输入！${NC}" ;;
     esac
 
