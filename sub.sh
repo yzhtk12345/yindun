@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：持久化固化端口/Token、多源IP嗅探、防火墙联动、完整客户端配置生成
+# Description: 纯客户端订阅分发守护进程：代码清晰可读、持久化固化、完整客户端配置生成
 # ==============================================================================
 
 RED="\033[31m"
@@ -17,7 +17,6 @@ PID_FILE="${CONFIG_DIR}/sub_server.pid"
 PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 
-# 确保配置目录存在
 mkdir -p "$CONFIG_DIR"
 
 detect_firewall() {
@@ -149,9 +148,9 @@ stop_daemon() {
     fi
 }
 
-# 独立生成 Python 服务端脚本（使用单引号 PYEOF 彻底隔离 Bash 转义冲突）
+# 结构清晰、完全可读的独立 Python 后端生成函数
 create_python_server_script() {
-    cat << 'PYEOF' > "$PYTHON_SERVER_FILE"
+    cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
 import urllib.parse
 import sys
@@ -198,23 +197,21 @@ def generate_subscriptions():
 
                     node_names.append(name)
 
-                    mi_proxy = (
-                        f'  - name: "{name}"\n'
-                        f'    type: vless\n'
-                        f'    server: {ip}\n'
-                        f'    port: {port_val}\n'
-                        f'    uuid: {uuid}\n'
-                        f'    network: tcp\n'
-                        f'    tls: true\n'
-                        f'    udp: true\n'
-                        f'    flow: xtls-rprx-vision\n'
-                        f'    client-fingerprint: chrome\n'
-                        f'    servername: {domain}\n'
-                        f'    reality-opts:\n'
-                        f'      public-key: {pub}\n'
-                        f'      short-id: {shortid}\n'
-                        f'      support-x25519mlkem768: false'
-                    )
+                    mi_proxy = f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    servername: {domain}
+    reality-opts:
+      public-key: {pub}
+      short-id: {shortid}
+      support-x25519mlkem768: false"""
                     mi_proxies.append(mi_proxy)
 
                     box_dict = {
@@ -394,7 +391,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
 server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
 server.serve_forever()
-PYEOF
+EOF
 }
 
 start_daemon() {
@@ -447,7 +444,7 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (完整客户端配置):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有输出已完美对齐！${NC}"
+    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有代码清晰可读！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
