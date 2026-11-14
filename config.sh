@@ -13,7 +13,7 @@ NC="\033[0m"
 
 CONFIG_DIR="/etc/yindun/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
-NODES_DB="${CONFIG_DIR}/reality_nodes.txt"
+NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 
 mkdir -p "${CONFIG_DIR}"
 
