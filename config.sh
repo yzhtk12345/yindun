@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 负责底层网络依赖、Python检查、防火墙、端口分配、REALITY 测速及服务端入站配置写入
+# Description: 负责底层网络依赖、Python检查、防火墙（带SSH保护）、端口分配、REALITY 测速及服务端入站配置写入
 # ==============================================================================
 
 # 颜色定义
@@ -110,7 +110,6 @@ cleanup_old_reality_firewall_rules() {
 
     case "$fw_type" in
         ufw)
-            # 通过 UFW 备注特征精准查找并删除旧的 YinDun-Reality 规则
             while true; do
                 local rule_num
                 rule_num=$(ufw status numbered | grep "YinDun-Reality" | head -n 1 | awk -F'[][]' '{print $2}')
@@ -244,7 +243,7 @@ select_best_reality_domain() {
 add_vless_reality_server_config() {
     check_and_install_python
 
-    # 在执行配置 Reality 之前，自动清理防火墙中其他旧的 Reality 端口（安全保护 SSH）
+    # 清理旧 Reality 防火墙规则
     cleanup_old_reality_firewall_rules
 
     # 自动重置旧配置与账本
@@ -309,7 +308,7 @@ add_vless_reality_server_config() {
 
     local node_name="vless-reality-vision-in-${host_name}"
 
-    # 使用 Python 安全写入纯入站 YAML（移除了无用的全局配置项）
+    # 使用 Python 安全写入纯入站 YAML
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
