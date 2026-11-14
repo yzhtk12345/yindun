@@ -17,7 +17,7 @@ LOG_DIR="${BASE_DIR}/logs"
 mkdir -p "${MIHOMO_DIR}" "${WARP_DIR}" "${LOG_DIR}"
 
 # 脚本版本号
-SCRIPT_VERSION="v1.0.0"
+SCRIPT_VERSION="v1.0.2"
 
 # 颜色定义
 RED="\033[31m"
@@ -27,7 +27,7 @@ BLUE="\033[34m"
 CYAN="\033[36m"
 NC="\033[0m"
 
-# TODO: 明天等你把子脚本推送到 GitHub 后，把这里改成你的仓库 Raw 地址
+# 仓库 Raw 地址
 REPO_URL="https://raw.githubusercontent.com/yzhtk12345/yindun/refs/heads/main"
 
 # 远程调用子脚本函数
@@ -44,18 +44,31 @@ run_remote_script() {
 # 系统与环境信息探测函数
 # ------------------------------------------------------------------------------
 get_system_info() {
-    # 1. 操作系统信息
+    # 1. 操作系统与主机名信息
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         OS_INFO="${PRETTY_NAME:-$ID}"
     else
         OS_INFO="Unknown Linux"
     fi
+    HOSTNAME_INFO=$(hostname 2>/dev/null || echo "Unknown")
 
     # 2. 内核版本
     KERNEL_VERSION=$(uname -r)
 
-    # 3. IP 栈检测 (通过双栈 API 检测公网状态)
+    # 3. BBR 状态检测
+    local bbr_congestion
+    bbr_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    local bbr_qdisc
+    bbr_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    
+    if [[ "$bbr_congestion" == "bbr" ]]; then
+        BBR_STATUS="${GREEN}已开启 ($bbr_congestion / $bbr_qdisc)${NC}"
+    else
+        BBR_STATUS="${YELLOW}未开启 (当前: ${bbr_congestion:-unknown})${NC}"
+    fi
+
+    # 4. IP 栈检测 (通过双栈 API 检测公网状态)
     IPV4_STATUS="${RED}未检测到${NC}"
     IPV6_STATUS="${RED}未检测到${NC}"
     
@@ -82,7 +95,7 @@ get_system_info() {
         IP_TYPE="${RED}无公网 IP${NC}"
     fi
 
-    # 4. Mihomo 安装状态与版本检查
+    # 5. Mihomo 安装状态与版本检查
     if [ -f "${MIHOMO_DIR}/mihomo" ]; then
         MIHOMO_STATUS="${GREEN}已安装${NC}"
         MIHOMO_VER=$("${MIHOMO_DIR}/mihomo" -v 2>/dev/null | awk '{print $2}' || echo "获取失败")
@@ -91,7 +104,7 @@ get_system_info() {
         MIHOMO_VER="N/A"
     fi
 
-    # 5. WARP 状态检查 (预留，后续根据实际安装判断)
+    # 6. WARP 状态检查
     if systemctl is-active --quiet wg-quick@wgcf 2>/dev/null || ip link show dev wgcf 2>/dev/null | grep -q "UP"; then
         WARP_STATUS="${GREEN}运行中${NC}"
     else
@@ -112,31 +125,36 @@ show_menu() {
     echo -e "${CYAN}        YinDun Mihomo Server Control Panel               ${NC}"
     echo -e "${BLUE}========================================================${NC}"
     echo -e " 脚本版本 : ${YELLOW}${SCRIPT_VERSION}${NC}   | 根路径   : ${CYAN}${BASE_DIR}${NC}"
+    echo -e " 主机名称 : ${YELLOW}${HOSTNAME_INFO}${NC}"
     echo -e " 系统发行 : ${OS_INFO}"
     echo -e " 系统内核 : ${KERNEL_VERSION}"
+    echo -e " BBR 状态 : ${BBR_STATUS}"
     echo -e " 网络状态 : ${IP_TYPE}"
     echo -e "   ├─ IPv4  : ${IPV4_STATUS}"
     echo -e "   └─ IPv6  : ${IPV6_STATUS}"
     echo -e " 核心状态 : Mihomo [${MIHOMO_STATUS} - ${MIHOMO_VER}] | WARP [${WARP_STATUS}]"
     echo -e "${BLUE}--------------------------------------------------------${NC}"
-    echo -e " ${GREEN}1.${NC} Linux 系统安全配置"
-    echo -e " ${GREEN}2.${NC} 安装/更新 Mihomo 核心"
-    echo -e " ${GREEN}3.${NC} 生成/修改配置文件"
-    echo -e " ${GREEN}4.${NC} 生成客户端订阅信息"
-    echo -e " ${GREEN}5.${NC} 开启/配置 BBR 优化"
-    echo -e " ${GREEN}6.${NC} 配置 Cloudflare WARP"
-    echo -e " ${RED}0.${NC} 退出脚本"
+    echo -e " ${GREEN}1.${NC} Linux 系统安全配置 (safety.sh)"
+    echo -e " ${GREEN}2.${NC} 安装/更新 Mihomo 核心 (install.sh)"
+    echo -e " ${GREEN}3.${NC} 生成/修改配置文件 (config.sh)"
+    echo -e " ${GREEN}4.${NC} 生成客户端订阅信息 (sub.sh)"
+    echo -e " ${GREEN}5.${NC} 开启/检查 BBR 优化 (bbr.sh)"
+    echo -e " ${GREEN}6.${NC} 配置 Cloudflare WARP (warp.sh)"
+    echo -e " ${RED}0.${NC} 退出脚本并刷新环境"
     echo -e "${BLUE}========================================================${NC}"
-    read -p "请输入选项 [0-5]: " choice
+    read -p "请输入选项 [0-6]: " choice
 
     case "$choice" in
-        1) run_remote_script "safety.sh"
+        1) run_remote_script "safety.sh" ;;
         2) run_remote_script "install.sh" ;;
         3) run_remote_script "config.sh" ;;
         4) run_remote_script "sub.sh" ;;
-        4) run_remote_script "bbr.sh" ;;
+        5) run_remote_script "bbr.sh" ;;
         6) run_remote_script "warp.sh" ;;
-        0) echo -e "${GREEN}感谢使用，再见！${NC}"; exec bash exit 0 ;;
+        0) 
+           echo -e "${GREEN}正在刷新 Shell 环境并退出...${NC}"
+           exec bash 
+           ;;
         *) echo -e "${RED}无效的选项，请重新输入！${NC}" ;;
     esac
 
