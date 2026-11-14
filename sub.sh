@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：彻底解耦 Python 守护脚本，零 Bash 解析冲突
+# Description: 纯客户端订阅分发守护进程：完美隔离函数输出、精准持久化端口与 Token
 # ==============================================================================
 
 RED="\033[31m"
@@ -16,11 +16,6 @@ PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 PID_FILE="${CONFIG_DIR}/sub_server.pid"
 PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
-
-if [ ! -f "$TOKEN_FILE" ]; then
-    openssl rand -hex 32 > "$TOKEN_FILE"
-fi
-SUB_TOKEN=$(cat "$TOKEN_FILE")
 
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
@@ -102,14 +97,12 @@ get_web_port() {
     if [ -f "$PORT_RECORD_FILE" ]; then
         target_port=$(cat "$PORT_RECORD_FILE")
         if [[ "$target_port" =~ ^[0-9]+$ ]] && [ "$target_port" -ge 10000 ] && [ "$target_port" -le 20000 ]; then
-            echo -e "${CYAN}[INFO] 检测到已固化的订阅服务端口: ${target_port}${NC}"
+            echo -e "${CYAN}[INFO] 检测到已固化的订阅服务端口: ${target_port}${NC}" >&2
             read -p "是否需要重新生成随机端口和重置 Token？[y/N]: " reset_choice
             if [[ "$reset_choice" =~ ^[Yy]$ ]]; then
                 cleanup_old_sub_firewall_rules
                 rm -f "$PORT_RECORD_FILE"
                 rm -f "$TOKEN_FILE"
-                openssl rand -hex 32 > "$TOKEN_FILE"
-                SUB_TOKEN=$(cat "$TOKEN_FILE")
                 target_port=""
             fi
         fi
@@ -123,10 +116,11 @@ get_web_port() {
             fi
         done
         echo "$target_port" > "$PORT_RECORD_FILE"
-        echo -e "${GREEN}[INFO] 已为您新分配并固化订阅服务端口: ${target_port}${NC}"
+        echo -e "${GREEN}[INFO] 已为您新分配并固化订阅服务端口: ${target_port}${NC}" >&2
     fi
 
-    echo "${target_port}"
+    # 仅输出纯数字，绝对杜绝污染变量
+    echo "${target_port//[!0-9]/}"
 }
 
 get_public_ip() {
@@ -153,7 +147,6 @@ stop_daemon() {
     fi
 }
 
-# 独立生成完全标准的 Python 服务端脚本（采用单引号包裹 EOF，防止任何 Bash 变量污染）
 create_python_server_script() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -300,11 +293,22 @@ start_daemon() {
     fi
 
     stop_daemon
-    create_python_server_script
+
+    # Token 持久化处理
+    if [ ! -f "$TOKEN_FILE" ]; then
+        openssl rand -hex 32 > "$TOKEN_FILE"
+    fi
 
     local web_port
     web_port=$(get_web_port)
 
+    # 如果刚才选择了重置 Token，这里重新生成
+    if [ ! -f "$TOKEN_FILE" ]; then
+        openssl rand -hex 32 > "$TOKEN_FILE"
+    fi
+    SUB_TOKEN=$(cat "$TOKEN_FILE")
+
+    create_python_server_script
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
 
     local server_ip
@@ -320,7 +324,7 @@ start_daemon() {
     echo -e "${CYAN}========================================================${NC}"
     echo -e "服务进程 PID : ${YELLOW}${new_pid}${NC}"
     echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固化)"
-    echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC} (已持久化固化)"
+    echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
     echo -e "${CYAN}--------------------------------------------------------${NC}"
     echo -e "1. 主订阅链接 (支持直接作为客户端订阅源导入，返回 Base64):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
@@ -331,7 +335,7 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (mi_links.yaml):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，脚本已安全退出！${NC}"
+    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有日志与输出已完美隔离！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
