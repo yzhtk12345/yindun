@@ -165,7 +165,6 @@ def generate_subscriptions():
                     shortid = parts.get("SHORTID", "")
                     domain = parts.get("DOMAIN", "gateway.icloud.com")
 
-                    # 1. Mihomo YAML
                     mi_proxy = (
                         f'  - name: "{name}"\n'
                         f'    type: vless\n'
@@ -185,7 +184,6 @@ def generate_subscriptions():
                     )
                     mi_proxies.append(mi_proxy)
 
-                    # 2. Sing-box JSON (使用原生字典结构，杜绝引号拼接错误)
                     box_dict = {
                         "type": "vless",
                         "tag": name,
@@ -209,7 +207,6 @@ def generate_subscriptions():
                     }
                     box_outbounds.append(box_dict)
 
-                    # 3. 通用订阅链接
                     encoded_name = urllib.parse.quote(name)
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
@@ -311,6 +308,6 @@ start_daemon() {
     echo -e "${GREEN}[INFO] 服务已在后台平稳运行，脚本已安全退出！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
