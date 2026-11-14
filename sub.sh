@@ -14,10 +14,6 @@ CONFIG_DIR="/etc/yindun/mihomo"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 
-ALL_LINKS_FILE="${CONFIG_DIR}/all_links.txt"
-BOX_LINKS_FILE="${CONFIG_DIR}/box_links.json"
-MI_LINKS_FILE="${CONFIG_DIR}/mi_links.yaml"
-
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 if [ ! -f "$TOKEN_FILE" ]; then
     openssl rand -hex 32 > "$TOKEN_FILE"
@@ -125,103 +121,14 @@ get_web_port() {
     echo "${target_port}"
 }
 
-generate_all_subscriptions() {
+run_web_daemon() {
     if [ ! -f "$NODES_DB" ]; then
         echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
+        echo -e "${YELLOW}[INFO] 请先运行 config.sh 生成服务端节点！${NC}"
         return 1
     fi
 
-    cat <<EOF > "$MI_LINKS_FILE"
-# YinDun Mihomo Subscription (mi_links.yaml)
-proxies:
-EOF
-
-    > "$BOX_LINKS_FILE"
-    echo "{" >> "$BOX_LINKS_FILE"
-    echo "  \"outbounds\": [" >> "$BOX_LINKS_FILE"
-
-    > "$ALL_LINKS_FILE"
-
-    local box_snippets=()
-
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-
-        local type_val name_val port_val uuid_val pub_val shortid_val domain_val ip_val
-        type_val=$(echo "$line" | grep -oP 'TYPE=\K[^|]+')
-        name_val=$(echo "$line" | grep -oP 'NAME=\K[^|]+')
-        port_val=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
-        uuid_val=$(echo "$line" | grep -oP 'UUID=\K[^|]+')
-        pub_val=$(echo "$line" | grep -oP 'PUB=\K[^|]+')
-        shortid_val=$(echo "$line" | grep -oP 'SHORTID=\K[^|]+')
-        domain_val=$(echo "$line" | grep -oP 'DOMAIN=\K[^|]+')
-        ip_val=$(echo "$line" | grep -oP 'IP=\K[^|]+')
-
-        if [[ "$type_val" == "vless-reality" ]]; then
-            local client_node_name="${name_val//-in-/-out-}"
-
-            cat <<EOF >> "$MI_LINKS_FILE"
-  - name: "${client_node_name}"
-    type: vless
-    server: ${ip_val}
-    port: ${port_val}
-    uuid: ${uuid_val}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    client-fingerprint: chrome
-    servername: ${domain_val}
-    reality-opts:
-      public-key: ${pub_val}
-      short-id: ${shortid_val}
-      support-x25519mlkem768: false
-EOF
-
-            local box_json_item="    {
-      \"type\": \"vless\",
-      \"tag\": \"${client_node_name}\",
-      \"server\": \"${ip_val}\",
-      \"server_port\": ${port_val},
-      \"uuid\": \"${uuid_val}\",
-      \"flow\": \"xtls-rprx-vision\",
-      \"tls\": {
-        \"enabled\": true,
-        \"server_name\": \"${domain_val}\",
-        \"utls\": {
-          \"enabled\": true,
-          \"fingerprint\": \"chrome\"
-        },
-        \"reality\": {
-          \"enabled\": true,
-          \"public_key\": \"${pub_val}\",
-          \"short_id\": \"${shortid_val}\"
-        }
-      }
-    }"
-            box_snippets+=("$box_json_item")
-
-            local encoded_name
-            encoded_name=$(echo -n "${client_node_name}" | jq -sRr @uri 2>/dev/null || echo "${client_node_name}")
-            local vless_link="vless://${uuid_val}@${ip_val}:${port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${domain_val}&fp=chrome&pbk=${pub_val}&sid=${shortid_val}#${encoded_name}"
-            echo "$vless_link" >> "$ALL_LINKS_FILE"
-        fi
-    done < "$NODES_DB"
-
-    if [ ${#box_snippets[@]} -gt 0 ]; then
-        local joined_box
-        joined_box=$(printf "%s,\n" "${box_snippets[@]}")
-        joined_box="${joined_box%,*}" # 去掉最后一个多余的逗号
-        echo "$joined_box" >> "$BOX_LINKS_FILE"
-    fi
-
-    echo "  ]" >> "$BOX_LINKS_FILE"
-    echo "}" >> "$BOX_LINKS_FILE"
-}
-
-run_web_daemon() {
     cleanup_old_sub_firewall_rules
-    generate_all_subscriptions || return 1
 
     local web_port
     web_port=$(get_web_port)
@@ -232,13 +139,109 @@ run_web_daemon() {
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
 
+    # 编写完全由 Python 独立全权处理账本解析与 Web 服务的脚本，彻底杜绝 Bash 解析报错
     cat << 'PY_SERVER_EOF' > "${CONFIG_DIR}/sub_server.py"
 import http.server
 import urllib.parse
 import sys
+import os
+import urllib.parse
 
 port = int(sys.argv[1])
 token = sys.argv[2]
+config_dir = sys.argv[3]
+nodes_db = os.path.join(config_dir, "all_nodes.txt")
+
+def generate_subscriptions():
+    all_links_path = os.path.join(config_dir, "all_links.txt")
+    box_links_path = os.path.join(config_dir, "box_links.json")
+    mi_links_path = os.path.join(config_dir, "mi_links.yaml")
+
+    mi_proxies = []
+    box_outbounds = []
+    all_links = []
+
+    if os.path.exists(nodes_db):
+        with open(nodes_db, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                parts = {}
+                for item in line.split("|"):
+                    if "=" in item:
+                        k, v = item.split("=", 1)
+                        parts[k] = v
+
+                if parts.get("TYPE") == "vless-reality":
+                    name = parts.get("NAME", "node").replace("-in-", "-out-")
+                    ip = parts.get("IP", "127.0.0.1")
+                    port = parts.get("PORT", "443")
+                    uuid = parts.get("UUID", "")
+                    pub = parts.get("PUB", "")
+                    shortid = parts.get("SHORTID", "")
+                    domain = parts.get("DOMAIN", "gateway.icloud.com")
+
+                    # 1. Mihomo YAML
+                    mi_proxy = f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port}
+    uuid: {uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    servername: {domain}
+    reality-opts:
+      public-key: {pub}
+      short-id: {shortid}
+      support-x25519mlkem768: false"""
+                    mi_proxies.append(mi_proxy)
+
+                    # 2. Sing-box JSON
+                    box_item = f"""    {{
+      "type": "vless",
+      "tag": "{name}",
+      "server": "{ip}",
+      "server_port": {port},
+      "uuid": "{uuid}",
+      "flow": "xtls-rprx-vision",
+      "tls": {{
+        "enabled": True,
+        "server_name": "{domain}",
+        "utls": {{
+          "enabled": True,
+          "fingerprint": "chrome"
+        }},
+        "reality": {{
+          "enabled": True,
+          "public_key": "{pub}",
+          "short_id": "{shortid}"
+        }}
+      }}
+    }}"""
+                    box_outbounds.append(box_item)
+
+                    # 3. Universal V2ray Link
+                    encoded_name = urllib.parse.quote(name)
+                    vless_link = f"vless://{uuid}@{ip}:{port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
+                    all_links.append(vless_link)
+
+    # 写入文件
+    with open(mi_links_path, "w", encoding="utf-8") as f:
+        f.write("# YinDun Mihomo Subscription (mi_links.yaml)\nproxies:\n" + "\n".join(mi_proxies) + "\n")
+
+    with open(box_links_path, "w", encoding="utf-8") as f:
+        f.write("{\n  \"outbounds\": [\n" + ",\n".join(box_outbounds) + "\n  ]\n}\n")
+
+    with open(all_links_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(all_links) + "\n")
+
+# 启动时自动生成一次
+generate_subscriptions()
 
 class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -252,23 +255,26 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b'Access Denied: Invalid or Missing Token')
             return
 
+        # 每次请求前动态重新生成，确保账本更新后立竿见影
+        generate_subscriptions()
+
         if parsed_path.path == '/all':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
-            with open('all_links.txt', 'rb') as f:
+            with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
                 self.wfile.write(f.read())
         elif parsed_path.path == '/box':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.end_headers()
-            with open('box_links.json', 'rb') as f:
+            with open(os.path.join(config_dir, 'box_links.json'), 'rb') as f:
                 self.wfile.write(f.read())
         elif parsed_path.path == '/mi':
             self.send_response(200)
             self.send_header('Content-Type', 'text/yaml; charset=utf-8')
             self.end_headers()
-            with open('mi_links.yaml', 'rb') as f:
+            with open(os.path.join(config_dir, 'mi_links.yaml'), 'rb') as f:
                 self.wfile.write(f.read())
         else:
             self.send_response(404)
@@ -308,7 +314,7 @@ Wants=network-online.target
 Type=simple
 User=root
 WorkingDirectory=${CONFIG_DIR}
-ExecStart=/usr/bin/python3 ${CONFIG_DIR}/sub_server.py ${web_port} ${SUB_TOKEN}
+ExecStart=/usr/bin/python3 ${CONFIG_DIR}/sub_server.py ${web_port} ${SUB_TOKEN} ${CONFIG_DIR}
 Restart=on-failure
 RestartSec=10
 
@@ -324,7 +330,7 @@ EOF
     fi
 
     cd "${CONFIG_DIR}" || exit
-    python3 sub_server.py "$web_port" "$SUB_TOKEN"
+    python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
