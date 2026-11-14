@@ -33,19 +33,19 @@ check_port_used() {
 }
 
 get_web_port() {
-    echo -e "${CYAN}--------------------------------------------------------${NC}"
-    read -p "请选择订阅 Web 服务的端口获取方式 [1. 随机获取(10000-20000) 2. 手动指定] (默认 1): " port_mode_choice
+    echo -e "${CYAN}--------------------------------------------------------${NC}" >&2
+    read -p "请选择订阅 Web 服务的端口获取方式 [1. 随机获取(10000-20000) 2. 手动指定] (默认 1): " port_mode_choice >&2
     local port_mode="auto"
     local target_port=""
 
     if [[ "$port_mode_choice" == "2" ]]; then
         port_mode="manual"
-        read -p "请输入您指定的 Web 端口 [1-65535]: " target_port
+        read -p "请输入您指定的 Web 端口 [1-65535]: " target_port >&2
     fi
 
     if [[ "$port_mode" == "manual" ]]; then
         if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
-            echo -e "${RED}[ERROR] 端口输入无效，使用默认随机分配${NC}"
+            echo -e "${RED}[ERROR] 端口输入无效，使用默认随机分配${NC}" >&2
             port_mode="auto"
         fi
     fi
@@ -57,12 +57,13 @@ get_web_port() {
                 break
             fi
         done
-        echo -e "${GREEN}[INFO] 自动为订阅 Web 服务分配端口 [10000-20000]: ${target_port}${NC}"
+        echo -e "${GREEN}[INFO] 自动为订阅 Web 服务分配端口 [10000-20000]: ${target_port}${NC}" >&2
     else
-        echo -e "${GREEN}[INFO] 已指定订阅 Web 服务端口: ${target_port}${NC}"
+        echo -e "${GREEN}[INFO] 已指定订阅 Web 服务端口: ${target_port}${NC}" >&2
     fi
 
-    echo "$target_port"
+    # 仅输出纯数字端口，确保没有任何颜色控制符污染
+    echo "${target_port//[!0-9]/}"
 }
 
 generate_all_subscriptions() {
@@ -243,6 +244,6 @@ server.serve_forever()
 "
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_web_server
 fi
