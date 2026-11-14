@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：修复订阅路由、根路径直接响应、持久化固化
+# Description: 纯客户端订阅分发守护进程：彻底解耦 Python 守护脚本，零 Bash 解析冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -153,6 +153,7 @@ stop_daemon() {
     fi
 }
 
+# 独立生成完全标准的 Python 服务端脚本（采用单引号包裹 EOF，防止任何 Bash 变量污染）
 create_python_server_script() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -198,23 +199,7 @@ def generate_subscriptions():
                     shortid = parts.get("SHORTID", "")
                     domain = parts.get("DOMAIN", "gateway.icloud.com")
 
-                    mi_proxy = (
-                        f'  - name: "{name}"\n'
-                        f'    type: vless\n'
-                        f'    server: {ip}\n'
-                        f'    port: {port_val}\n'
-                        f'    uuid: {uuid}\n'
-                        f'    network: tcp\n'
-                        f'    tls: true\n'
-                        f'    udp: true\n'
-                        f'    flow: xtls-rprx-vision\n'
-                        f'    client-fingerprint: chrome\n'
-                        f'    servername: {domain}\n'
-                        f'    reality-opts:\n'
-                        f'      public-key: {pub}\n'
-                        f'      short-id: {shortid}\n'
-                        f'      support-x25519mlkem768: false'
-                    )
+                    mi_proxy = f'  - name: "{name}"\n    type: vless\n    server: {ip}\n    port: {port_val}\n    uuid: {uuid}\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    client-fingerprint: chrome\n    servername: {domain}\n    reality-opts:\n      public-key: {pub}\n      short-id: {shortid}\n      support-x25519mlkem768: false'
                     mi_proxies.append(mi_proxy)
 
                     box_dict = {
@@ -269,16 +254,13 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
         generate_subscriptions()
 
-        # 根路径 '/' 或 '/all' 默认直接返回 Base64 编码的通用订阅，完美适配绝大多数客户端
         if parsed_path.path in ['/', '/all']:
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
             self.end_headers()
             with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
                 raw_data = f.read()
-                # 客户端订阅通常支持 Base64，这里我们自动转换为 Base64 编码输出
-                encoded_data = base64.b64encode(raw_data)
-                self.wfile.write(encoded_data)
+                self.wfile.write(base64.b64encode(raw_data))
         elif parsed_path.path == '/raw':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain; charset=utf-8')
@@ -349,9 +331,9 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (mi_links.yaml):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 订阅地址已优化升级，完美兼容各大代理客户端！${NC}"
+    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，脚本已安全退出！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
