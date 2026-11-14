@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：后台静默运行、防火墙联动、独立Python守护
+# Description: 纯客户端订阅分发守护进程：后台静默运行、防火墙联动、Python原生JSON序列化
 # ==============================================================================
 
 RED="\033[31m"
@@ -127,6 +127,7 @@ import http.server
 import urllib.parse
 import sys
 import os
+import json
 
 port = int(sys.argv[1])
 token = sys.argv[2]
@@ -158,27 +159,66 @@ def generate_subscriptions():
                 if parts.get("TYPE") == "vless-reality":
                     name = parts.get("NAME", "node").replace("-in-", "-out-")
                     ip = parts.get("IP", "127.0.0.1")
-                    port = parts.get("PORT", "443")
+                    port_val = parts.get("PORT", "443")
                     uuid = parts.get("UUID", "")
                     pub = parts.get("PUB", "")
                     shortid = parts.get("SHORTID", "")
                     domain = parts.get("DOMAIN", "gateway.icloud.com")
 
-                    mi_proxy = f"  - name: \"{name}\"\n    type: vless\n    server: {ip}\n    port: {port}\n    uuid: {uuid}\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    client-fingerprint: chrome\n    servername: {domain}\n    reality-opts:\n      public-key: {pub}\n      short-id: {shortid}\n      support-x25519mlkem768: false"
+                    # 1. Mihomo YAML
+                    mi_proxy = (
+                        f'  - name: "{name}"\n'
+                        f'    type: vless\n'
+                        f'    server: {ip}\n'
+                        f'    port: {port_val}\n'
+                        f'    uuid: {uuid}\n'
+                        f'    network: tcp\n'
+                        f'    tls: true\n'
+                        f'    udp: true\n'
+                        f'    flow: xtls-rprx-vision\n'
+                        f'    client-fingerprint: chrome\n'
+                        f'    servername: {domain}\n'
+                        f'    reality-opts:\n'
+                        f'      public-key: {pub}\n'
+                        f'      short-id: {shortid}\n'
+                        f'      support-x25519mlkem768: false'
+                    )
                     mi_proxies.append(mi_proxy)
 
-                    box_item = f"    {{\n      \"type\": \"vless\",\n      \"tag\": \"{name}\",\n      \"server\": \"{ip}\",\n      \"server_port\": {port},\n      \"uuid\": \"{uuid}\",\n      \"flow\": \"xtls-rprx-vision\",\n      \"tls\": {{\n        \"enabled\": True,\n        \"server_name\": \"{domain}\",\n        \"utls\": {{\n          \"enabled\": True,\n          \"fingerprint\": \"chrome\"\n        }},\n        \"reality\": {{\n          \"enabled\": True,\n          \"public_key\": \"{pub}\",\n          \"short_id\": \"{shortid}\"\n        }}\n      }}\n    }}"
-                    box_outbounds.append(box_item)
+                    # 2. Sing-box JSON (使用原生字典结构，杜绝引号拼接错误)
+                    box_dict = {
+                        "type": "vless",
+                        "tag": name,
+                        "server": ip,
+                        "server_port": int(port_val),
+                        "uuid": uuid,
+                        "flow": "xtls-rprx-vision",
+                        "tls": {
+                            "enabled": True,
+                            "server_name": domain,
+                            "utls": {
+                                "enabled": True,
+                                "fingerprint": "chrome"
+                            },
+                            "reality": {
+                                "enabled": True,
+                                "public_key": pub,
+                                "short_id": shortid
+                            }
+                        }
+                    }
+                    box_outbounds.append(box_dict)
 
+                    # 3. 通用订阅链接
                     encoded_name = urllib.parse.quote(name)
-                    vless_link = f"vless://{uuid}@{ip}:{port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
+                    vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
     with open(mi_links_path, "w", encoding="utf-8") as f:
         f.write("# YinDun Mihomo Subscription (mi_links.yaml)\nproxies:\n" + "\n".join(mi_proxies) + "\n")
 
     with open(box_links_path, "w", encoding="utf-8") as f:
-        f.write("{\n  \"outbounds\": [\n" + ",\n".join(box_outbounds) + "\n  ]\n}\n")
+        json.dump({"outbounds": box_outbounds}, f, indent=2, ensure_ascii=False)
 
     with open(all_links_path, "w", encoding="utf-8") as f:
         f.write("\n".join(all_links) + "\n")
