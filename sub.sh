@@ -164,44 +164,10 @@ def generate_subscriptions():
                     shortid = parts.get("SHORTID", "")
                     domain = parts.get("DOMAIN", "gateway.icloud.com")
 
-                    mi_proxy = f"""  - name: "{name}"
-    type: vless
-    server: {ip}
-    port: {port}
-    uuid: {uuid}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    client-fingerprint: chrome
-    servername: {domain}
-    reality-opts:
-      public-key: {pub}
-      short-id: {shortid}
-      support-x25519mlkem768: false"""
+                    mi_proxy = f"  - name: \"{name}\"\n    type: vless\n    server: {ip}\n    port: {port}\n    uuid: {uuid}\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    client-fingerprint: chrome\n    servername: {domain}\n    reality-opts:\n      public-key: {pub}\n      short-id: {shortid}\n      support-x25519mlkem768: false"
                     mi_proxies.append(mi_proxy)
 
-                    box_item = f"""    {{
-      "type": "vless",
-      "tag": "{name}",
-      "server": "{ip}",
-      "server_port": {port},
-      "uuid": "{uuid}",
-      "flow": "xtls-rprx-vision",
-      "tls": {{
-        "enabled": True,
-        "server_name": "{domain}",
-        "utls": {{
-          "enabled": True,
-          "fingerprint": "chrome"
-        }},
-        "reality": {{
-          "enabled": True,
-          "public_key": "{pub}",
-          "short_id": "{shortid}"
-        }}
-      }}
-    }}"""
+                    box_item = f"    {{\n      \"type\": \"vless\",\n      \"tag\": \"{name}\",\n      \"server\": \"{ip}\",\n      \"server_port\": {port},\n      \"uuid\": \"{uuid}\",\n      \"flow\": \"xtls-rprx-vision\",\n      \"tls\": {{\n        \"enabled\": True,\n        \"server_name\": \"{domain}\",\n        \"utls\": {{\n          \"enabled\": True,\n          \"fingerprint\": \"chrome\"\n        }},\n        \"reality\": {{\n          \"enabled\": True,\n          \"public_key\": \"{pub}\",\n          \"short_id\": \"{shortid}\"\n        }}\n      }}\n    }}"
                     box_outbounds.append(box_item)
 
                     encoded_name = urllib.parse.quote(name)
