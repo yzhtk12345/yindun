@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：完美隔离函数输出、精准持久化端口与 Token
+# Description: 纯客户端订阅分发守护进程：绝对干净的端口获取与持久化
 # ==============================================================================
 
 RED="\033[31m"
@@ -119,8 +119,8 @@ get_web_port() {
         echo -e "${GREEN}[INFO] 已为您新分配并固化订阅服务端口: ${target_port}${NC}" >&2
     fi
 
-    # 仅输出纯数字，绝对杜绝污染变量
-    echo "${target_port//[!0-9]/}"
+    # 仅输出纯数字
+    echo "$target_port"
 }
 
 get_public_ip() {
@@ -294,15 +294,16 @@ start_daemon() {
 
     stop_daemon
 
-    # Token 持久化处理
     if [ ! -f "$TOKEN_FILE" ]; then
         openssl rand -hex 32 > "$TOKEN_FILE"
     fi
 
+    # 清空管道变量污染，严格提取纯数字端口
+    local raw_port
+    raw_port=$(get_web_port)
     local web_port
-    web_port=$(get_web_port)
+    web_port=$(echo "$raw_port" | grep -oE '[0-9]+' | tail -n 1)
 
-    # 如果刚才选择了重置 Token，这里重新生成
     if [ ! -f "$TOKEN_FILE" ]; then
         openssl rand -hex 32 > "$TOKEN_FILE"
     fi
@@ -323,7 +324,7 @@ start_daemon() {
     echo -e "${GREEN}  YinDun 客户端订阅守护进程已在后台成功启动！${NC}"
     echo -e "${CYAN}========================================================${NC}"
     echo -e "服务进程 PID : ${YELLOW}${new_pid}${NC}"
-    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固化)"
+    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固화)"
     echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
     echo -e "${CYAN}--------------------------------------------------------${NC}"
     echo -e "1. 主订阅链接 (支持直接作为客户端订阅源导入，返回 Base64):"
@@ -335,9 +336,9 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (mi_links.yaml):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有日志与输出已完美隔离！${NC}"
+    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有输出已完美对齐！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
