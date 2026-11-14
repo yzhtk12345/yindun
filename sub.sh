@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：支持后台静默运行、停止和状态检查
+# Description: 纯客户端订阅分发守护进程：后台静默运行、防火墙联动、独立Python守护
 # ==============================================================================
 
 RED="\033[31m"
@@ -14,6 +14,7 @@ CONFIG_DIR="/etc/yindun/mihomo"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 PID_FILE="${CONFIG_DIR}/sub_server.pid"
+PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
 
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 if [ ! -f "$TOKEN_FILE" ]; then
@@ -107,7 +108,6 @@ get_web_port() {
     echo "${target_port}"
 }
 
-# 停止后台服务
 stop_daemon() {
     if [ -f "$PID_FILE" ]; then
         local pid
@@ -121,28 +121,9 @@ stop_daemon() {
     cleanup_old_sub_firewall_rules
 }
 
-# 启动后台服务
-start_daemon() {
-    if [ ! -f "$NODES_DB" ]; then
-        echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
-        echo -e "${YELLOW}[INFO] 请先运行 config.sh 生成服务端节点！${NC}"
-        return 1
-    }
-
-    # 先停掉旧的
-    stop_daemon
-
-    local web_port
-    web_port=$(get_web_port)
-    echo "$web_port" > "$PORT_RECORD_FILE"
-
-    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
-
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
-
-    # 创建 Python 后端分发脚本
-    cat << 'PY_SERVER_EOF' > "${CONFIG_DIR}/sub_server.py"
+# 独立生成 Python 守护脚本（完全避开 Bash 的任何符号干扰）
+create_python_server_script() {
+    cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
 import urllib.parse
 import sys
@@ -277,13 +258,32 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b'Not Found')
 
     def log_message(self, format, *args):
-        pass  # 静默运行，不刷屏
+        pass
 
 server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
 server.serve_forever()
-PY_SERVER_EOF
+EOF
+}
 
-    # 在后台静默运行 Python 服务
+start_daemon() {
+    if [ ! -f "$NODES_DB" ]; then
+        echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
+        echo -e "${YELLOW}[INFO] 请先运行 config.sh 生成服务端节点！${NC}"
+        return 1
+    fi
+
+    stop_daemon
+    create_python_server_script
+
+    local web_port
+    web_port=$(get_web_port)
+    echo "$web_port" > "$PORT_RECORD_FILE"
+
+    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
+
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
+
     cd "${CONFIG_DIR}" || exit
     nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
     local new_pid=$!
@@ -303,7 +303,7 @@ PY_SERVER_EOF
     echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 脚本已安全退出，服务正在后台平稳运行，无需按 Ctrl+C！${NC}"
+    echo -e "${GREEN}[INFO] 服务已在后台平稳运行，脚本已安全退出！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
