@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：彻底独立 Python 文件，杜绝一切 Bash 语法冲突
+# Description: 纯客户端订阅分发守护进程：持久化固化端口/Token、多源IP嗅探、防火墙联动、完整客户端配置生成
 # ==============================================================================
 
 RED="\033[31m"
@@ -16,6 +16,9 @@ PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 PID_FILE="${CONFIG_DIR}/sub_server.pid"
 PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
+
+# 确保配置目录存在
+mkdir -p "$CONFIG_DIR"
 
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
@@ -131,7 +134,7 @@ get_public_ip() {
             return 0
         fi
     done
-    echo "YOUR_SERVER_IP"
+    echo "45.207.156.146"
 }
 
 stop_daemon() {
@@ -146,9 +149,8 @@ stop_daemon() {
     fi
 }
 
-# 采用纯粹、绝对独立的 Python 脚本写入方式，避开任何 Bash 语法冲突
+# 独立生成 Python 服务端脚本（使用单引号 PYEOF 彻底隔离 Bash 转义冲突）
 create_python_server_script() {
-    mkdir -p "$CONFIG_DIR"
     cat << 'PYEOF' > "$PYTHON_SERVER_FILE"
 import http.server
 import urllib.parse
@@ -170,6 +172,7 @@ def generate_subscriptions():
     mi_proxies = []
     box_outbounds = []
     all_links = []
+    node_names = []
 
     if os.path.exists(nodes_db):
         with open(nodes_db, "r", encoding="utf-8") as f:
@@ -193,7 +196,25 @@ def generate_subscriptions():
                     shortid = parts.get("SHORTID", "")
                     domain = parts.get("DOMAIN", "gateway.icloud.com")
 
-                    mi_proxy = f'  - name: "{name}"\n    type: vless\n    server: {ip}\n    port: {port_val}\n    uuid: {uuid}\n    network: tcp\n    tls: true\n    udp: true\n    flow: xtls-rprx-vision\n    client-fingerprint: chrome\n    servername: {domain}\n    reality-opts:\n      public-key: {pub}\n      short-id: {shortid}\n      support-x25519mlkem768: false'
+                    node_names.append(name)
+
+                    mi_proxy = (
+                        f'  - name: "{name}"\n'
+                        f'    type: vless\n'
+                        f'    server: {ip}\n'
+                        f'    port: {port_val}\n'
+                        f'    uuid: {uuid}\n'
+                        f'    network: tcp\n'
+                        f'    tls: true\n'
+                        f'    udp: true\n'
+                        f'    flow: xtls-rprx-vision\n'
+                        f'    client-fingerprint: chrome\n'
+                        f'    servername: {domain}\n'
+                        f'    reality-opts:\n'
+                        f'      public-key: {pub}\n'
+                        f'      short-id: {shortid}\n'
+                        f'      support-x25519mlkem768: false'
+                    )
                     mi_proxies.append(mi_proxy)
 
                     box_dict = {
@@ -223,11 +244,101 @@ def generate_subscriptions():
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
+    proxy_names_yaml = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
+    
+    mihomo_full_config = f"""port: 7890
+socks-port: 7891
+redir-port: 7892
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+proxies:
+""" + ("\n".join(mi_proxies) if mi_proxies else "") + f"""
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "♻️ 自动选择"
+      - "🎯 手动切换"
+      - "DIRECT"
+{proxy_names_yaml}
+
+  - name: "♻️ 自动选择"
+    type: url-test
+    url: "http://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    proxies:
+{proxy_names_yaml}
+
+  - name: "🎯 手动切换"
+    type: select
+    proxies:
+{proxy_names_yaml}
+
+  - name: "🌍 国外媒体"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "DIRECT"
+
+  - name: "🐟 漏网之鱼"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "DIRECT"
+
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - GEOIP,cn,DIRECT
+  - MATCH,🐟 漏网之鱼
+"""
+
     with open(mi_links_path, "w", encoding="utf-8") as f:
-        f.write("# YinDun Mihomo Subscription (mi_links.yaml)\nproxies:\n" + "\n".join(mi_proxies) + "\n")
+        f.write(mihomo_full_config)
+
+    selector_outbounds = ["auto", "direct"] + node_names
+    singbox_full_config = {
+        "log": {"disabled": False, "level": "info", "timestamp": True},
+        "dns": {
+            "servers": [
+                {"tag": "dns-remote", "address": "https://8.8.8.8/dns-query", "detour": "auto"},
+                {"tag": "dns-direct", "address": "223.5.5.5", "detour": "direct"}
+            ],
+            "rules": [{"rule_set": ["geosite-cn"], "server": "dns-direct"}],
+            "strategy": "prefer_ipv4"
+        },
+        "inbounds": [{
+            "type": "tun",
+            "tag": "tun-in",
+            "interface_name": "tun0",
+            "inet4_address": "172.19.0.1/30",
+            "auto_route": True,
+            "strict_route": True,
+            "stack": "system",
+            "sniff": True
+        }],
+        "outbounds": box_outbounds + [
+            {"type": "selector", "tag": "select", "outbounds": selector_outbounds, "default": node_names[0] if node_names else "direct"},
+            {"type": "urltest", "tag": "auto", "outbounds": node_names if node_names else ["direct"], "url": "http://www.gstatic.com/generate_204", "interval": "10m", "tolerance": 50},
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"}
+        ],
+        "route": {
+            "rules": [
+                {"protocol": "dns", "action": "hijack-dns"},
+                {"ip_is_private": True, "outbound": "direct"}
+            ],
+            "final": "select",
+            "auto_detect_interface": True
+        }
+    }
 
     with open(box_links_path, "w", encoding="utf-8") as f:
-        json.dump({"outbounds": box_outbounds}, f, indent=2, ensure_ascii=False)
+        json.dump(singbox_full_config, f, indent=2, ensure_ascii=False)
 
     with open(all_links_path, "w", encoding="utf-8") as f:
         f.write("\n".join(all_links) + "\n")
@@ -331,14 +442,14 @@ start_daemon() {
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
     echo -e "2. 原文明文链接 (all_links.txt):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Sing-box 专属订阅 (box_links.json):"
+    echo -e "3. Sing-box 专属订阅 (完整客户端配置):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
-    echo -e "4. Mihomo 专属订阅 (mi_links.yaml):"
+    echo -e "4. Mihomo 专属订阅 (完整客户端配置):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
     echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有输出已完美对齐！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
