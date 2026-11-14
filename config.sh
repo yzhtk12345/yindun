@@ -31,7 +31,6 @@ check_and_install_dependencies() {
     fi
 }
 
-# 检查并自动安装 Python 3
 check_and_install_python() {
     if ! command -v python3 &>/dev/null; then
         echo -e "${YELLOW}[INFO] 检测到系统未安装 Python 3，正在自动安装...${NC}"
@@ -151,7 +150,7 @@ manage_firewall_port() {
 }
 
 # ------------------------------------------------------------------------------
-# 3. REALITY 测速优选域名模块
+# 3. REALITY 测速优选域名模块（已修复标准输出，防止日志污染）
 # ------------------------------------------------------------------------------
 REALITY_CANDIDATES=(
     "gateway.icloud.com"
@@ -163,7 +162,7 @@ REALITY_CANDIDATES=(
 )
 
 select_best_reality_domain() {
-    echo -e "${CYAN}[INFO] 正在对 REALITY 候选回落域名进行测速优选...${NC}"
+    echo -e "${CYAN}[INFO] 正在对 REALITY 候选回落域名进行测速优选...${NC}" >&2
     local best_domain=""
     local temp_file="/tmp/yindun_domain_test.log"
     > "$temp_file"
@@ -174,20 +173,22 @@ select_best_reality_domain() {
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 域名: ${domain} | 延迟: ${GREEN}${ms} ms${NC}"
+            echo -e "  -> 域名: ${domain} | 延迟: ${GREEN}${ms} ms${NC}" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
 
     if [ -s "$temp_file" ]; then
         best_domain=$(sort -n "$temp_file" | head -n 1 | awk '{print $2}')
-        echo -e "${GREEN}[SUCCESS] 已自动选中最优域名: ${best_domain}${NC}"
+        echo -e "${GREEN}[SUCCESS] 已自动选中最优域名: ${best_domain}${NC}" >&2
     else
         best_domain="gateway.icloud.com"
-        echo -e "${YELLOW}[WARN] 测速未完成，兜底使用: ${best_domain}${NC}"
+        echo -e "${YELLOW}[WARN] 测速未完成，兜底使用: ${best_domain}${NC}" >&2
     fi
     rm -f "$temp_file"
-    echo "$best_domain"
+    
+    # 仅输出干净的域名字符串给调用方
+    echo -ne "${best_domain}" | tr -d '\r\n'
 }
 
 # ------------------------------------------------------------------------------
@@ -218,9 +219,10 @@ add_vless_reality_server_config() {
         return 1
     fi
 
+    # 严格过滤控制字符
     local uuid short_id
-    uuid=$(cat /proc/sys/kernel/random/uuid)
-    short_id=$(openssl rand -hex 8 2>/dev/null)
+    uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    short_id=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
 
     local mihomo_bin="${CONFIG_DIR}/mihomo"
     if [ ! -x "$mihomo_bin" ]; then
@@ -231,8 +233,9 @@ add_vless_reality_server_config() {
     echo -e "${CYAN}[INFO] 正在调用 mihomo 生成官方 Reality 密钥对...${NC}"
     local keypair private_key public_key
     keypair=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
-    private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}')
-    public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}')
+    
+    private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
+    public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
 
     if [[ -z "$private_key" || -z "$public_key" ]]; then
         echo -e "${RED}[ERROR] 密钥对生成失败！${NC}"
@@ -242,13 +245,13 @@ add_vless_reality_server_config() {
     local server_name
     server_name=$(select_best_reality_domain)
     local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
     local node_name="vless-reality-vision-in-${host_name}"
 
-    # 使用单引号 'PY_SCRIPT' 隔离，通过参数传递变量，彻底避免 Bash 解析大括号报错
+    # 使用 Python 安全写入 YAML
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
@@ -281,7 +284,8 @@ with open(config_path, "r", encoding="utf-8") as f:
     content = f.read()
 
 if "listeners:" in content:
-    content = content.replace("listeners:\n", "listeners:\n" + snippet + "\n", 1)
+    if node_name not in content:
+        content = content.replace("listeners:\n", "listeners:\n" + snippet + "\n", 1)
 else:
     content += "\nlisteners:\n" + snippet
 
