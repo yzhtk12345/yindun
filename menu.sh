@@ -119,21 +119,23 @@ show_menu() {
     echo -e "   └─ IPv6  : ${IPV6_STATUS}"
     echo -e " 核心状态 : Mihomo [${MIHOMO_STATUS} - ${MIHOMO_VER}] | WARP [${WARP_STATUS}]"
     echo -e "${BLUE}--------------------------------------------------------${NC}"
-    echo -e " ${GREEN}1.${NC} 安装/更新 Mihomo 核心 (install.sh)"
-    echo -e " ${GREEN}2.${NC} 生成/修改配置文件 (config.sh)"
-    echo -e " ${GREEN}3.${NC} 生成客户端订阅信息 (sub.sh)"
-    echo -e " ${GREEN}4.${NC} 开启/配置 BBR 优化 (bbr.sh)"
-    echo -e " ${GREEN}5.${NC} 配置 Cloudflare WARP (warp.sh)"
+    echo -e " ${GREEN}1.${NC} Linux 系统安全配置"
+    echo -e " ${GREEN}2.${NC} 安装/更新 Mihomo 核心"
+    echo -e " ${GREEN}3.${NC} 生成/修改配置文件"
+    echo -e " ${GREEN}4.${NC} 生成客户端订阅信息"
+    echo -e " ${GREEN}5.${NC} 开启/配置 BBR 优化"
+    echo -e " ${GREEN}6.${NC} 配置 Cloudflare WARP"
     echo -e " ${RED}0.${NC} 退出脚本"
     echo -e "${BLUE}========================================================${NC}"
     read -p "请输入选项 [0-5]: " choice
 
     case "$choice" in
-        1) run_remote_script "install.sh" ;;
-        2) run_remote_script "config.sh" ;;
-        3) run_remote_script "sub.sh" ;;
+        1) run_remote_script "safety.sh"
+        2) run_remote_script "install.sh" ;;
+        3) run_remote_script "config.sh" ;;
+        4) run_remote_script "sub.sh" ;;
         4) run_remote_script "bbr.sh" ;;
-        5) run_remote_script "warp.sh" ;;
+        6) run_remote_script "warp.sh" ;;
         0) echo -e "${GREEN}感谢使用，再见！${NC}"; exit 0 ;;
         *) echo -e "${RED}无效的选项，请重新输入！${NC}" ;;
     esac
