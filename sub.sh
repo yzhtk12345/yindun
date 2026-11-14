@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：修复 Mihomo 模板 YAML 缩进对齐问题
+# Description: 纯客户端订阅分发守护进程：集成高级 Mihomo 与 Sing-box 客户端配置模板
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,7 +148,7 @@ stop_daemon() {
     fi
 }
 
-# 修正缩进后的 Python 服务端生成函数
+# 嵌入高级 Mihomo & Sing-box 模板的 Python 后端生成函数
 prepare_python_server() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -197,6 +197,7 @@ def generate_subscriptions():
 
                     node_names.append(name)
 
+                    # Mihomo 节点
                     mi_proxy = f"""  - name: "{name}"
     type: vless
     server: {ip}
@@ -214,6 +215,7 @@ def generate_subscriptions():
       support-x25519mlkem768: false"""
                     mi_proxies.append(mi_proxy)
 
+                    # Sing-box 节点
                     box_dict = {
                         "type": "vless",
                         "tag": name,
@@ -241,7 +243,9 @@ def generate_subscriptions():
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
-    # 严格对齐 6 个空格缩进，完美适配 Mihomo 策略组 YAML 规范
+    # -------------------------------------------------------------
+    # 1. 生成 Mihomo YAML 配置文件
+    # -------------------------------------------------------------
     proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
 
     mihomo_full_config = f"""port: 7890
@@ -314,44 +318,171 @@ rules:
   - GEOIP,CN,DIRECT
   - MATCH,🌍选择代理节点
 """
-
     with open(mi_links_path, "w", encoding="utf-8") as f:
         f.write(mihomo_full_config)
 
-    selector_outbounds = ["auto", "direct"] + node_names
+    # -------------------------------------------------------------
+    # 2. 生成 Sing-box JSON 配置文件 (严格采用你提供的高级模板)
+    # -------------------------------------------------------------
+    # 动态构建 selector 和 urltest 的 outbounds 列表
+    selector_outbounds = ["auto"] + node_names if node_names else ["direct"]
+    auto_outbounds = node_names if node_names else ["direct"]
+
     singbox_full_config = {
-        "log": {"disabled": False, "level": "info", "timestamp": True},
+        "log": {
+            "level": "info",
+            "timestamp": True
+        },
+        "http_clients": [
+            {
+                "tag": "rule-set-direct"
+            }
+        ],
         "dns": {
             "servers": [
-                {"tag": "dns-remote", "address": "https://8.8.8.8/dns-query", "detour": "auto"},
-                {"tag": "dns-direct", "address": "223.5.5.5", "detour": "direct"}
+                {
+                    "type": "fakeip",
+                    "tag": "fakeip",
+                    "inet4_range": "198.18.0.0/15",
+                    "inet6_range": "fc00::/18"
+                },
+                {
+                    "type": "udp",
+                    "tag": "dns-cn",
+                    "server": "223.5.5.5",
+                    "server_port": 53
+                },
+                {
+                    "type": "https",
+                    "tag": "dns-proxy",
+                    "server": "dns.google",
+                    "domain_resolver": "dns-cn",
+                    "detour": "proxy"
+                }
             ],
-            "rules": [{"rule_set": ["geosite-cn"], "server": "dns-direct"}],
-            "strategy": "prefer_ipv4"
-        },
-        "inbounds": [{
-            "type": "tun",
-            "tag": "tun-in",
-            "interface_name": "tun0",
-            "inet4_address": "172.19.0.1/30",
-            "auto_route": True,
-            "strict_route": True,
-            "stack": "system",
-            "sniff": True
-        }],
-        "outbounds": box_outbounds + [
-            {"type": "selector", "tag": "select", "outbounds": selector_outbounds, "default": node_names[0] if node_names else "direct"},
-            {"type": "urltest", "tag": "auto", "outbounds": node_names if node_names else ["direct"], "url": "http://www.gstatic.com/generate_204", "interval": "10m", "tolerance": 50},
-            {"type": "direct", "tag": "direct"},
-            {"type": "block", "tag": "block"}
-        ],
-        "route": {
             "rules": [
-                {"protocol": "dns", "action": "hijack-dns"},
-                {"ip_is_private": True, "outbound": "direct"}
+                {
+                    "rule_set": ["geosite-cn"],
+                    "action": "route",
+                    "server": "dns-cn"
+                },
+                {
+                    "query_type": ["A", "AAAA"],
+                    "action": "route",
+                    "server": "fakeip"
+                }
             ],
-            "final": "select",
-            "auto_detect_interface": True
+            "final": "dns-proxy",
+            "strategy": "prefer_ipv4",
+            "cache_capacity": 8192,
+            "optimistic": {
+                "enabled": True,
+                "timeout": "1h"
+            },
+            "timeout": "10s",
+            "reverse_mapping": True
+        },
+        "inbounds": [
+            {
+                "type": "tun",
+                "tag": "tun-in",
+                "address": [
+                    "172.19.0.1/30",
+                    "fdfe:dcba:9876::1/126"
+                ],
+                "auto_route": True,
+                "strict_route": True,
+                "mtu": 1420
+            }
+        ],
+        "outbounds": [
+            {
+                "type": "selector",
+                "tag": "proxy",
+                "default": "auto",
+                "outbounds": selector_outbounds
+            },
+            {
+                "type": "urltest",
+                "tag": "auto",
+                "outbounds": auto_outbounds,
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": "10m",
+                "tolerance": 30,
+                "idle_timeout": "30m"
+            },
+            {
+                "type": "direct",
+                "tag": "direct"
+            }
+        ] + box_outbounds,  # 自动将所有生成的真实节点追加到 outbounds 中
+        "route": {
+            "default_http_client": "rule-set-direct",
+            "default_domain_resolver": "dns-cn",
+            "auto_detect_interface": True,
+            "rule_set": [
+                {
+                    "tag": "geosite-cn",
+                    "type": "remote",
+                    "format": "binary",
+                    "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs"
+                },
+                {
+                    "tag": "geoip-cn",
+                    "type": "remote",
+                    "format": "binary",
+                    "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs"
+                }
+            ],
+            "rules": [
+                {
+                    "inbound": ["tun-in"],
+                    "protocol": ["dns"],
+                    "action": "hijack-dns"
+                },
+                {
+                    "clash_mode": "Global",
+                    "action": "route",
+                    "outbound": "proxy"
+                },
+                {
+                    "ip_is_private": True,
+                    "action": "route",
+                    "outbound": "direct"
+                },
+                {
+                    "rule_set": ["geosite-cn"],
+                    "action": "route",
+                    "outbound": "direct"
+                },
+                {
+                    "rule_set": ["geoip-cn"],
+                    "action": "route",
+                    "outbound": "direct"
+                },
+                {
+                    "clash_mode": "Direct",
+                    "action": "route",
+                    "outbound": "direct"
+                },
+                {
+                    "network": ["tcp", "udp"],
+                    "port": 853,
+                    "action": "reject"
+                }
+            ],
+            "final": "proxy"
+        },
+        "experimental": {
+            "cache_file": {
+                "enabled": True,
+                "store_dns": True
+            },
+            "clash_api": {
+                "external_controller": "127.0.0.1:9090",
+                "external_ui": "ui",
+                "default_mode": "Rule"
+            }
         }
     }
 
@@ -460,14 +591,14 @@ start_daemon() {
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
     echo -e "2. 原文明文链接 (all_links.txt):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Sing-box 专属订阅 (完整客户端配置):"
+    echo -e "3. Sing-box 专属订阅 (高级 Fake-IP + 自动测速模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
     echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] YAML 缩进已完美修正，现在可以去客户端完美导入了！${NC}"
+    echo -e "${GREEN}[INFO] Sing-box 高级模板集成完毕，双端均已完美适配！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
