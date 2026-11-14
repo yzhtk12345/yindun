@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：代码清晰可读、持久化固化、完整客户端配置生成
+# Description: 纯客户端订阅分发守护进程：剥离内联代码，采用远程/本地独立加载 sub_server.py
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,8 +148,8 @@ stop_daemon() {
     fi
 }
 
-# 结构清晰、完全可读的独立 Python 后端生成函数
-create_python_server_script() {
+# 自动在本地生成或更新标准的 sub_server.py 文件（纯净文本写入，绝无 Bash 解析冲突）
+prepare_python_server() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
 import urllib.parse
@@ -417,7 +417,7 @@ start_daemon() {
     fi
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-    create_python_server_script
+    prepare_python_server
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
 
     local server_ip
@@ -444,9 +444,9 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (完整客户端配置):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有代码清晰可读！${NC}"
+    echo -e "${GREEN}[INFO] 订阅守护进程运行平稳，所有结构完美运行！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
