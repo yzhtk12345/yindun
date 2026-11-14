@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Project: YinDun Multi-Client Subscription & Web Server (sub.sh)
-# Description: 纯客户端订阅分发中心：Web服务端口(10000-20000)，生成全量客户端订阅文件
+# Project: YinDun Client Subscription Manager & Web Daemon (sub.sh)
+# Description: 纯客户端订阅分发守护进程：Web端口(10000-20000)+防火墙联动+Systemd开机自启
 # ==============================================================================
 
 RED="\033[31m"
@@ -12,6 +12,7 @@ NC="\033[0m"
 
 CONFIG_DIR="/etc/yindun/mihomo"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
+PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 
 ALL_LINKS_FILE="${CONFIG_DIR}/all_links.txt"
 BOX_LINKS_FILE="${CONFIG_DIR}/box_links.json"
@@ -23,6 +24,92 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 SUB_TOKEN=$(cat "$TOKEN_FILE")
 
+# 检测系统防火墙类型
+detect_firewall() {
+    if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
+        echo "ufw"
+    elif systemctl is-active --quiet firewalld 2>/dev/null || command -v firewall-cmd &>/dev/null; then
+        echo "firewalld"
+    elif command -v iptables &>/dev/null; then
+        echo "iptables"
+    else
+        echo "none"
+    fi
+}
+
+# 清理旧的 YinDun 订阅 Web 端口防火墙规则
+cleanup_old_sub_firewall_rules() {
+    local fw_type
+    fw_type=$(detect_firewall)
+    echo -e "${CYAN}[INFO] 正在清理防火墙中的旧 YinDun 订阅 Web 端口规则...${NC}"
+
+    # 如果有历史记录的端口，优先精准清除
+    if [ -f "$PORT_RECORD_FILE" ]; then
+        local old_port
+        old_port=$(cat "$PORT_RECORD_FILE")
+        if [[ -n "$old_port" ]]; then
+            case "$fw_type" in
+                ufw)
+                    ufw delete allow "${old_port}/tcp" >/dev/null 2>&1
+                    ufw reload >/dev/null 2>&1
+                    ;;
+                firewalld)
+                    firewall-cmd --permanent --remove-port="${old_port}/tcp" >/dev/null 2>&1
+                    firewall-cmd --reload >/dev/null 2>&1
+                    ;;
+                iptables)
+                    iptables -D INPUT -p tcp --dport "$old_port" -j ACCEPT 2>/dev/null || true
+                    ;;
+            esac
+            echo -e "${YELLOW}[INFO] 已清理历史旧订阅端口: ${old_port}${NC}"
+        fi
+        rm -f "$PORT_RECORD_FILE"
+    fi
+
+    # 通用防御：通过 UFW 备注清理带 YinDun-Sub 的规则
+    if [[ "$fw_type" == "ufw" ]]; then
+        while true; do
+            local rule_num
+            rule_num=$(ufw status numbered | grep "YinDun-Sub" | head -n 1 | awk -F'[][]' '{print $2}')
+            [[ -z "$rule_num" ]] && break
+            yes | ufw delete "$rule_num" >/dev/null 2>&1
+        done
+        ufw reload >/dev/null 2>&1
+    fi
+}
+
+# 防火墙开放端口
+manage_firewall_port() {
+    local action="$1"
+    local port="$2"
+    local comment="$3"
+    local fw_type
+    fw_type=$(detect_firewall)
+
+    case "$fw_type" in
+        ufw)
+            if [[ "$action" == "add" ]]; then
+                ufw allow "$port/tcp" comment "$comment" >/dev/null 2>&1
+                ufw reload >/dev/null 2>&1
+                echo -e "${GREEN}[UFW] 已开放订阅 Web 端口 ${port}/tcp (备注: ${comment})${NC}"
+            fi
+            ;;
+        firewalld)
+            if [[ "$action" == "add" ]]; then
+                firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1
+                firewall-cmd --reload >/dev/null 2>&1
+                echo -e "${GREEN}[Firewalld] 已永久开放订阅 Web 端口 ${port}/tcp${NC}"
+            fi
+            ;;
+        iptables)
+            if [[ "$action" == "add" ]]; then
+                iptables -A INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null
+                echo -e "${GREEN}[Iptables] 已开放订阅 Web 端口 ${port}/tcp${NC}"
+            fi
+            ;;
+    esac
+}
+
 check_port_used() {
     local port="$1"
     if command -v ss &>/dev/null; then
@@ -33,44 +120,22 @@ check_port_used() {
 }
 
 get_web_port() {
-    echo -e "${CYAN}--------------------------------------------------------${NC}" >&2
-    read -p "请选择订阅 Web 服务的端口获取方式 [1. 随机获取(10000-20000) 2. 手动指定] (默认 1): " port_mode_choice >&2
-    local port_mode="auto"
     local target_port=""
-
-    if [[ "$port_mode_choice" == "2" ]]; then
-        port_mode="manual"
-        read -p "请输入您指定的 Web 端口 [1-65535]: " target_port >&2
-    fi
-
-    if [[ "$port_mode" == "manual" ]]; then
-        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
-            echo -e "${RED}[ERROR] 端口输入无效，使用默认随机分配${NC}" >&2
-            port_mode="auto"
+    while true; do
+        target_port=$((RANDOM % 10001 + 10000))
+        if ! check_port_used "$target_port"; then
+            break
         fi
-    fi
-
-    if [[ "$port_mode" == "auto" ]]; then
-        while true; do
-            target_port=$((RANDOM % 10001 + 10000))
-            if ! check_port_used "$target_port"; then
-                break
-            fi
-        done
-        echo -e "${GREEN}[INFO] 自动为订阅 Web 服务分配端口 [10000-20000]: ${target_port}${NC}" >&2
-    else
-        echo -e "${GREEN}[INFO] 已指定订阅 Web 服务端口: ${target_port}${NC}" >&2
-    fi
-
-    echo "${target_port//[!0-9]/}"
+    done
+    echo "${target_port}"
 }
 
+# 生成所有客户端订阅文件
 generate_all_subscriptions() {
     if [ ! -f "$NODES_DB" ]; then
         echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
-        echo -e "${YELLOW}[INFO] 请先运行 config.sh 生成服务端节点！${NC}"
         return 1
-    fi
+    }
 
     cat <<EOF > "$MI_LINKS_FILE"
 # YinDun Mihomo Subscription (mi_links.yaml)
@@ -167,16 +232,26 @@ ${joined_box_items}
 EOF
 }
 
-start_web_server() {
+# 核心守护主逻辑：清理旧端口 -> 随机分配新端口(10000-20000) -> 写入防火墙 -> 启动 Python Web 服务
+run_web_daemon() {
+    # 1. 自动清理历史旧端口及防火墙残留
+    cleanup_old_sub_firewall_rules
+
+    # 2. 生成订阅内容
     generate_all_subscriptions || return 1
 
+    # 3. 在 10000-20000 范围内随机分配可用端口
     local web_port
     web_port=$(get_web_port)
+    echo "$web_port" > "$PORT_RECORD_FILE"
+
+    # 4. 动态写入防火墙规则
+    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
 
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
 
-    # 创建独立的 Python 服务器辅助脚本，彻底避免内联字符串转义错误
+    # 创建 Python 后端分发脚本
     cat << 'PY_SERVER_EOF' > "${CONFIG_DIR}/sub_server.py"
 import http.server
 import urllib.parse
@@ -228,24 +303,52 @@ server.serve_forever()
 PY_SERVER_EOF
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${GREEN}  YinDun 客户端订阅 Web 服务已成功启动！${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "安全 Token (高强度随机):"
-    echo -e "${YELLOW}${SUB_TOKEN}${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
+    echo -e "${CYAN}========================================================${NC} "
+    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC}"
+    echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
     echo -e "${CYAN}--------------------------------------------------------${NC}"
-    echo -e "1. 通用订阅 (all_links.txt - 适用于 V2ray / 虎兕 / throne 等):"
+    echo -e "1. 通用订阅 (all_links.txt):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/all?token=${SUB_TOKEN}${NC}"
     echo -e "2. Sing-box 专属订阅 (box_links.json):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
     echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${YELLOW}提示: 按 Ctrl+C 可以停止当前 Web 服务。${NC}"
+
+    # 注册并启用 Systemd 系统服务（实现开机默默自启与后台常驻）
+    local systemd_service_file="/etc/systemd/system/yindun-sub.service"
+    if [ ! -f "$systemd_service_file" ]; then
+        cat <<EOF > "$systemd_service_file"
+[Unit]
+Description=YinDun Multi-Client Subscription Daemon
+After=network.target network-online.target mihomo.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${CONFIG_DIR}
+ExecStart=/usr/bin/python3 ${CONFIG_DIR}/sub_server.py ${web_port} ${SUB_TOKEN}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload >/dev/null 2>&1
+        systemctl enable yindun-sub.service >/dev/null 2>&1
+        echo -e "${GREEN}[INFO] 已自动注册 Systemd 服务，并设置为开机默默自启！${NC}"
+    else
+        # 如果服务文件已存在，更新其中的端口
+        sed -i "s|sub_server.py [0-9]*|sub_server.py ${web_port}|g" "$systemd_service_file"
+        systemctl daemon-reload >/dev/null 2>&1
+    fi
 
     cd "${CONFIG_DIR}" || exit
     python3 sub_server.py "$web_port" "$SUB_TOKEN"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    start_web_server
+    run_web_daemon
 fi
