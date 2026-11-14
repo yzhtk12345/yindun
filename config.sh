@@ -194,7 +194,6 @@ select_best_reality_domain() {
 # 4. VLESS-REALITY 服务端核心写入模块
 # ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
-    # 确保 Python3 环境已就绪
     check_and_install_python
 
     local host_name
@@ -204,7 +203,6 @@ add_vless_reality_server_config() {
     echo -e "${CYAN}        开始配置并写入 VLESS-REALITY 服务端入站          ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    # 选择端口获取方式
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto"
     local manual_port=""
@@ -220,12 +218,10 @@ add_vless_reality_server_config() {
         return 1
     fi
 
-    # 生成 UUID 与 Short ID
     local uuid short_id
     uuid=$(cat /proc/sys/kernel/random/uuid)
     short_id=$(openssl rand -hex 8 2>/dev/null)
 
-    # 调用 Mihomo 官方命令生成密钥对
     local mihomo_bin="${CONFIG_DIR}/mihomo"
     if [ ! -x "$mihomo_bin" ]; then
         echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件 (${mihomo_bin})！${NC}"
@@ -243,61 +239,64 @@ add_vless_reality_server_config() {
         return 1
     fi
 
-    # 优选域名与获取公网 IP
     local server_name
     server_name=$(select_best_reality_domain)
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
 
-    # 防火墙放行
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
-    # 构造标准服务端 listeners 片段
     local node_name="vless-reality-vision-in-${host_name}"
-    local listener_snippet="  - name: \"${node_name}\"
+    
+    # 构造写入配置的 Python 脚本，彻底避免 Bash 字符串嵌套语法错误
+    python3 - <<EOF
+config_path = "${CONFIG_FILE}"
+node_name = "${node_name}"
+port = ${port}
+uuid = "${uuid}"
+private_key = "${private_key}"
+short_id = "${short_id}"
+server_name = "${server_name}"
+
+import os
+
+snippet = f"""  - name: "{node_name}"
     type: vless
-    port: ${port}
+    port: {port}
     listen: 0.0.0.0
     users:
       - username: 1
-        uuid: ${uuid}
+        uuid: {uuid}
         flow: xtls-rprx-vision
     reality-config:
-      dest: \"${server_name}:443\"
-      private-key: \"${private_key}\"
+      dest: "{server_name}:443"
+      private-key: "{private_key}"
       short-id:
-        - \"${short_id}\"
+        - "{short_id}"
       server-names:
-        - \"${server_name}\""
+        - "{server_name}"
+"""
 
-    # 写入 config.yaml
-    if [ ! -f "$CONFIG_FILE" ]; then
-        cat <<EOF > "$CONFIG_FILE"
-mixed-port: 10801
-allow-lan: true
-mode: rule
-log-level: info
-ipv6: true
-listeners:
+if not os.path.exists(config_path):
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write("mixed-port: 10801\nallow-lan: true\nmode: rule\nlog-level: info\nivp6: true\nlisteners:\n")
+
+with open(config_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+if "listeners:" in content:
+    content = content.replace("listeners:\n", "listeners:\n" + snippet + "\n", 1)
+else:
+    content += "\nlisteners:\n" + snippet
+
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write(content)
 EOF
-    fi
-
-    if grep -q "^listeners:" "$CONFIG_FILE"; then
-        python3 -c "
-with open('$CONFIG_FILE', 'r', encoding='utf-8') as f:
-    text = f.read()
-text = text.replace('listeners:\n', 'listeners:\n' + '''${listener_snippet}''' + '\n', 1)
-with open('$CONFIG_FILE', 'w', encoding='utf-8') as f:
-    f.write(text)
-"
-    else
-        echo -e "\nlisteners:\n${listener_snippet}" >> "$CONFIG_FILE"
-    fi
 
     # 持久化账本记录
     echo "TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}" >> "${NODES_DB}"
 
-    # 重启服务生效
     systemctl restart mihomo
 
     echo -e "\n${GREEN}========================================================${NC}"
