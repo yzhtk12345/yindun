@@ -150,7 +150,7 @@ manage_firewall_port() {
 }
 
 # ------------------------------------------------------------------------------
-# 3. REALITY 测速优选域名模块（极简纯净版，绝不污染返回值）
+# 3. REALITY 测速优选域名模块
 # ------------------------------------------------------------------------------
 REALITY_CANDIDATES=(
     "gateway.icloud.com"
@@ -186,7 +186,6 @@ select_best_reality_domain() {
     fi
     rm -f "$temp_file"
     
-    # 绝对纯净的输出
     echo -n "$best_domain"
 }
 
@@ -196,7 +195,7 @@ select_best_reality_domain() {
 add_vless_reality_server_config() {
     check_and_install_python
 
-    # 自动清理可能存在的历史坏配置与账本（实现脚本自动化管理）
+    # 自动重置旧配置与账本
     if [ -f "$CONFIG_FILE" ]; then
         echo -e "${YELLOW}[INFO] 检测到旧配置文件，正在自动重置初始化...${NC}"
         rm -f "$CONFIG_FILE"
@@ -258,14 +257,15 @@ add_vless_reality_server_config() {
 
     local node_name="vless-reality-vision-in-${host_name}"
 
-    # 使用 Python 安全写入干净的 YAML
+    # 使用 Python 安全写入纯入站 YAML（移除了无用的全局配置项）
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
 
 config_path, node_name, port, uuid, private_key, short_id, server_name = sys.argv[1:8]
 
-snippet = f"""  - name: "{node_name}"
+snippet = f"""listeners:
+  - name: "{node_name}"
     type: vless
     port: {port}
     listen: 0.0.0.0
@@ -283,10 +283,8 @@ snippet = f"""  - name: "{node_name}"
 """
 
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-header = "mixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: info\nipv6: true\nlisteners:\n"
-
 with open(config_path, "w", encoding="utf-8") as f:
-    f.write(header + snippet)
+    f.write(snippet)
 PY_SCRIPT
 
     # 持久化账本记录
