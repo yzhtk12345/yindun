@@ -121,7 +121,6 @@ stop_daemon() {
     cleanup_old_sub_firewall_rules
 }
 
-# 独立生成 Python 守护脚本（完全避开 Bash 的任何符号干扰）
 create_python_server_script() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -306,6 +305,6 @@ start_daemon() {
     echo -e "${GREEN}[INFO] 服务已在后台平稳运行，脚本已安全退出！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
