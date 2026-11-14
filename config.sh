@@ -150,7 +150,7 @@ manage_firewall_port() {
 }
 
 # ------------------------------------------------------------------------------
-# 3. REALITY 测速优选域名模块（已修复标准输出，防止日志污染）
+# 3. REALITY 测速优选域名模块（极简纯净版，绝不污染返回值）
 # ------------------------------------------------------------------------------
 REALITY_CANDIDATES=(
     "gateway.icloud.com"
@@ -163,17 +163,17 @@ REALITY_CANDIDATES=(
 
 select_best_reality_domain() {
     echo -e "${CYAN}[INFO] 正在对 REALITY 候选回落域名进行测速优选...${NC}" >&2
-    local best_domain=""
+    local best_domain="gateway.icloud.com"
     local temp_file="/tmp/yindun_domain_test.log"
     > "$temp_file"
 
     for domain in "${REALITY_CANDIDATES[@]}"; do
         local time_cost
-        time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 3 "https://${domain}" 2>/dev/null)
+        time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 域名: ${domain} | 延迟: ${GREEN}${ms} ms${NC}" >&2
+            echo -e "  -> 域名: ${domain} | 延迟: ${ms} ms" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
@@ -182,13 +182,12 @@ select_best_reality_domain() {
         best_domain=$(sort -n "$temp_file" | head -n 1 | awk '{print $2}')
         echo -e "${GREEN}[SUCCESS] 已自动选中最优域名: ${best_domain}${NC}" >&2
     else
-        best_domain="gateway.icloud.com"
         echo -e "${YELLOW}[WARN] 测速未完成，兜底使用: ${best_domain}${NC}" >&2
     fi
     rm -f "$temp_file"
     
-    # 仅输出干净的域名字符串给调用方
-    echo -ne "${best_domain}" | tr -d '\r\n'
+    # 绝对纯净的输出
+    echo -n "$best_domain"
 }
 
 # ------------------------------------------------------------------------------
@@ -196,6 +195,15 @@ select_best_reality_domain() {
 # ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
     check_and_install_python
+
+    # 自动清理可能存在的历史坏配置与账本（实现脚本自动化管理）
+    if [ -f "$CONFIG_FILE" ]; then
+        echo -e "${YELLOW}[INFO] 检测到旧配置文件，正在自动重置初始化...${NC}"
+        rm -f "$CONFIG_FILE"
+    fi
+    if [ -f "$NODES_DB" ]; then
+        rm -f "$NODES_DB"
+    fi
 
     local host_name
     host_name=$(hostname)
@@ -219,7 +227,6 @@ add_vless_reality_server_config() {
         return 1
     fi
 
-    # 严格过滤控制字符
     local uuid short_id
     uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     short_id=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
@@ -251,7 +258,7 @@ add_vless_reality_server_config() {
 
     local node_name="vless-reality-vision-in-${host_name}"
 
-    # 使用 Python 安全写入 YAML
+    # 使用 Python 安全写入干净的 YAML
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
@@ -275,22 +282,11 @@ snippet = f"""  - name: "{node_name}"
         - "{server_name}"
 """
 
-if not os.path.exists(config_path):
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    with open(config_path, "w", encoding="utf-8") as f:
-        f.write("mixed-port: 10801\nallow-lan: true\nmode: rule\nlog-level: info\nipv6: true\nlisteners:\n")
-
-with open(config_path, "r", encoding="utf-8") as f:
-    content = f.read()
-
-if "listeners:" in content:
-    if node_name not in content:
-        content = content.replace("listeners:\n", "listeners:\n" + snippet + "\n", 1)
-else:
-    content += "\nlisteners:\n" + snippet
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+header = "mixed-port: 7890\nallow-lan: true\nmode: rule\nlog-level: info\nipv6: true\nlisteners:\n"
 
 with open(config_path, "w", encoding="utf-8") as f:
-    f.write(content)
+    f.write(header + snippet)
 PY_SCRIPT
 
     # 持久化账本记录
