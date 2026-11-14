@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Multi-Client Subscription & Web Server (sub.sh)
-# Description: 纯客户端订阅分发中心：Web服务端口(10000-20000)，生成 all_links.txt, box_links.json, mi_links.yaml
+# Description: 纯客户端订阅分发中心：Web服务端口(10000-20000)，生成全量客户端订阅文件
 # ==============================================================================
 
 RED="\033[31m"
@@ -62,7 +62,6 @@ get_web_port() {
         echo -e "${GREEN}[INFO] 已指定订阅 Web 服务端口: ${target_port}${NC}" >&2
     fi
 
-    # 仅输出纯数字端口，确保没有任何颜色控制符污染
     echo "${target_port//[!0-9]/}"
 }
 
@@ -177,29 +176,14 @@ start_web_server() {
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${GREEN}  YinDun 客户端订阅 Web 服务已成功启动！${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "安全 Token (高强度随机):"
-    echo -e "${YELLOW}${SUB_TOKEN}${NC}"
-    echo -e "${CYAN}--------------------------------------------------------${NC}"
-    echo -e "1. 通用订阅 (all_links.txt - 适用于 V2ray / 虎兕 / throne 等):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/all?token=${SUB_TOKEN}${NC}"
-    echo -e "2. Sing-box 专属订阅 (box_links.json):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "${YELLOW}提示: 按 Ctrl+C 可以停止当前 Web 服务。${NC}"
-
-    cd "${CONFIG_DIR}" || exit
-
-    python3 -c "
+    # 创建独立的 Python 服务器辅助脚本，彻底避免内联字符串转义错误
+    cat << 'PY_SERVER_EOF' > "${CONFIG_DIR}/sub_server.py"
 import http.server
 import urllib.parse
+import sys
 
-PORT = ${web_port}
-TOKEN = '${SUB_TOKEN}'
+port = int(sys.argv[1])
+token = sys.argv[2]
 
 class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
@@ -207,7 +191,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
         query_params = urllib.parse.parse_qs(parsed_path.query)
         user_token = query_params.get('token', [''])[0]
 
-        if user_token != TOKEN:
+        if user_token != token:
             self.send_response(403)
             self.end_headers()
             self.wfile.write(b'Access Denied: Invalid or Missing Token')
@@ -239,11 +223,29 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         print(f'[WEB LOG] {args[0]}')
 
-server = http.server.HTTPServer(('0.0.0.0', PORT), MultiSubHandler)
+server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
 server.serve_forever()
-"
+PY_SERVER_EOF
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅 Web 服务已成功启动！${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+    echo -e "安全 Token (高强度随机):"
+    echo -e "${YELLOW}${SUB_TOKEN}${NC}"
+    echo -e "${CYAN}--------------------------------------------------------${NC}"
+    echo -e "1. 通用订阅 (all_links.txt - 适用于 V2ray / 虎兕 / throne 等):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/all?token=${SUB_TOKEN}${NC}"
+    echo -e "2. Sing-box 专属订阅 (box_links.json):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
+    echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+    echo -e "${YELLOW}提示: 按 Ctrl+C 可以停止当前 Web 服务。${NC}"
+
+    cd "${CONFIG_DIR}" || exit
+    python3 sub_server.py "$web_port" "$SUB_TOKEN"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_web_server
 fi
