@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 负责底层网络依赖、防火墙、端口分配、REALITY 测速及服务端入站配置写入
+# Description: 负责底层网络依赖、Python检查、防火墙、端口分配、REALITY 测速及服务端入站配置写入
 # ==============================================================================
 
 # 颜色定义
@@ -18,7 +18,7 @@ NODES_DB="${CONFIG_DIR}/reality_nodes.txt"
 mkdir -p "${CONFIG_DIR}"
 
 # ------------------------------------------------------------------------------
-# 1. 基础依赖与端口管理模块
+# 1. 基础依赖、Python环境与端口管理模块
 # ------------------------------------------------------------------------------
 check_and_install_dependencies() {
     if ! command -v ss &>/dev/null; then
@@ -27,6 +27,18 @@ check_and_install_dependencies() {
             apt-get update -y && apt-get install -y iproute2 &>/dev/null
         elif command -v yum &>/dev/null; then
             yum install -y iproute &>/dev/null
+        fi
+    fi
+}
+
+# 检查并自动安装 Python 3
+check_and_install_python() {
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${YELLOW}[INFO] 检测到系统未安装 Python 3，正在自动安装...${NC}"
+        if command -v apt-get &>/dev/null; then
+            apt-get update -y && apt-get install -y python3 &>/dev/null
+        elif command -v yum &>/dev/null; then
+            yum install -y python3 &>/dev/null
         fi
     fi
 }
@@ -182,6 +194,9 @@ select_best_reality_domain() {
 # 4. VLESS-REALITY 服务端核心写入模块
 # ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
+    # 确保 Python3 环境已就绪
+    check_and_install_python
+
     local host_name
     host_name=$(hostname)
 
@@ -215,7 +230,7 @@ add_vless_reality_server_config() {
     if [ ! -x "$mihomo_bin" ]; then
         echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件 (${mihomo_bin})！${NC}"
         return 1
-    }
+    fi
 
     echo -e "${CYAN}[INFO] 正在调用 mihomo 生成官方 Reality 密钥对...${NC}"
     local keypair private_key public_key
@@ -237,7 +252,7 @@ add_vless_reality_server_config() {
     # 防火墙放行
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
-    # 构造标准服务端 listeners 片段 (名称不带端口，规范为 vless-reality-vision-in-主机名)
+    # 构造标准服务端 listeners 片段
     local node_name="vless-reality-vision-in-${host_name}"
     local listener_snippet="  - name: \"${node_name}\"
     type: vless
@@ -279,7 +294,7 @@ with open('$CONFIG_FILE', 'w', encoding='utf-8') as f:
         echo -e "\nlisteners:\n${listener_snippet}" >> "$CONFIG_FILE"
     fi
 
-    # 持久化账本记录（私钥、公钥、UUID、端口等全部留档，供后续 sub.sh 客户端生成使用）
+    # 持久化账本记录
     echo "TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}" >> "${NODES_DB}"
 
     # 重启服务生效
@@ -296,7 +311,7 @@ with open('$CONFIG_FILE', 'w', encoding='utf-8') as f:
     echo -e "${GREEN}========================================================${NC}"
 }
 
-# 如果直接执行该脚本，可提供一个简单的交互菜单测试
+# 交互菜单测试
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo -e "${CYAN}=== YinDun Config 管理脚本 ==="
     echo "1. 添加 VLESS-REALITY 服务端节点"
