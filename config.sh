@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持多协议（VLESS-REALITY 与 Hysteria 2）服务端入站安全写入与精准空行分隔
+# Description: 支持多协议（VLESS-REALITY 与 Hysteria 2）服务端入站安全写入，根除管道 EOF 冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -16,9 +16,6 @@ NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 
 mkdir -p "${CONFIG_DIR}"
 
-# ------------------------------------------------------------------------------
-# 1. 基础依赖、Python环境与端口管理模块
-# ------------------------------------------------------------------------------
 check_and_install_dependencies() {
     if ! command -v ss &>/dev/null; then
         echo -e "${YELLOW}[INFO] 检测到系统缺少网络诊断工具 (ss)，正在自动安装...${NC}"
@@ -34,9 +31,9 @@ check_and_install_python() {
     if ! command -v python3 &>/dev/null; then
         echo -e "${YELLOW}[INFO] 检测到系统未安装 Python 3，正在自动安装...${NC}"
         if command -v apt-get &>/dev/null; then
-            apt-get update -y && apt-get install -y python3 &>/dev/null
+            apt-get update -y && apt-get install -y python3 python3-yaml &>/dev/null
         elif command -v yum &>/dev/null; then
-            yum install -y python3 &>/dev/null
+            yum install -y python3 python3-PyYAML &>/dev/null
         fi
     fi
 }
@@ -45,9 +42,9 @@ check_port_used() {
     local port="$1"
     check_and_install_dependencies
     if ss -tuln | grep -q ":${port} "; then
-        return 0 # 已占用
+        return 0
     else
-        return 1 # 未占用
+        return 1
     fi
 }
 
@@ -87,9 +84,6 @@ get_available_port() {
     echo "$target_port"
 }
 
-# ------------------------------------------------------------------------------
-# 2. 防火墙智能管理模块
-# ------------------------------------------------------------------------------
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
         echo "ufw"
@@ -148,9 +142,6 @@ manage_firewall_port() {
     esac
 }
 
-# ------------------------------------------------------------------------------
-# 3. REALITY 测速优选域名模块
-# ------------------------------------------------------------------------------
 REALITY_CANDIDATES=(
     "gateway.icloud.com"
     "icloud.com"
@@ -188,9 +179,6 @@ select_best_reality_domain() {
     echo -n "$best_domain"
 }
 
-# ------------------------------------------------------------------------------
-# 4. VLESS-REALITY 服务端核心写入模块
-# ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
     check_and_install_python
 
@@ -264,7 +252,6 @@ if os.path.exists(config_path):
     except Exception:
         pass
 
-# 移除同名旧监听器
 data["listeners"] = [l for l in data["listeners"] if l.get("name") != node_name]
 
 new_listener = {
@@ -304,9 +291,6 @@ PY_SCRIPT
     echo -e "${GREEN}========================================================${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# 5. Hysteria 2 (自签证书 + SHA-256 指纹) 服务端核心写入模块
-# ------------------------------------------------------------------------------
 add_hysteria2_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -376,7 +360,6 @@ if os.path.exists(config_path):
     except Exception:
         pass
 
-# 移除同名旧监听器
 data["listeners"] = [l for l in data["listeners"] if l.get("name") != node_name]
 
 new_listener = {
@@ -412,9 +395,6 @@ PY_SCRIPT
     echo -e "${GREEN}========================================================${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# 6. 交互式主菜单
-# ------------------------------------------------------------------------------
 show_menu() {
     clear
     echo -e "${CYAN}========================================================${NC}"
@@ -442,6 +422,6 @@ show_menu() {
     esac
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     show_menu
 fi
