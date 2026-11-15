@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 负责底层网络依赖、Python检查、防火墙（带SSH保护）、端口分配、REALITY 测速及服务端入站配置写入
+# Description: 支持 VLESS-REALITY 与 Hysteria 2 (自签证书及 SHA-256 指纹) 的服务端配置管理
 # ==============================================================================
 
-# 颜色定义
 RED="\033[31m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
@@ -24,9 +23,9 @@ check_and_install_dependencies() {
     if ! command -v ss &>/dev/null; then
         echo -e "${YELLOW}[INFO] 检测到系统缺少网络诊断工具 (ss)，正在自动安装...${NC}"
         if command -v apt-get &>/dev/null; then
-            apt-get update -y && apt-get install -y iproute2 &>/dev/null
+            apt-get update -y && apt-get install -y iproute2 openssl &>/dev/null
         elif command -v yum &>/dev/null; then
-            yum install -y iproute &>/dev/null
+            yum install -y iproute openssl &>/dev/null
         fi
     fi
 }
@@ -89,7 +88,7 @@ get_available_port() {
 }
 
 # ------------------------------------------------------------------------------
-# 2. 防火墙智能管理模块（含：清理带有 YinDun-Reality 备注的旧端口，保护 SSH）
+# 2. 防火墙智能管理模块
 # ------------------------------------------------------------------------------
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
@@ -101,54 +100,6 @@ detect_firewall() {
     else
         echo "none"
     fi
-}
-
-cleanup_old_reality_firewall_rules() {
-    local fw_type
-    fw_type=$(detect_firewall)
-    echo -e "${CYAN}[INFO] 正在检查并清理防火墙中的旧 Reality 端口规则（已自动保护 SSH 端口）...${NC}"
-
-    case "$fw_type" in
-        ufw)
-            while true; do
-                local rule_num
-                rule_num=$(ufw status numbered | grep "YinDun-Reality" | head -n 1 | awk -F'[][]' '{print $2}')
-                if [[ -z "$rule_num" ]]; then
-                    break
-                fi
-                echo -e "${YELLOW}[UFW] 正在删除旧 Reality 防火墙规则编号: ${rule_num}${NC}"
-                yes | ufw delete "$rule_num" >/dev/null 2>&1
-            done
-            ufw reload >/dev/null 2>&1
-            ;;
-        firewalld)
-            if [ -f "$NODES_DB" ]; then
-                while IFS= read -r line; do
-                    [[ -z "$line" ]] && continue
-                    local old_p
-                    old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
-                    if [[ -n "$old_p" ]]; then
-                        firewall-cmd --permanent --remove-port="${old_p}/tcp" >/dev/null 2>&1
-                        echo -e "${YELLOW}[Firewalld] 已移除旧 Reality 端口: ${old_p}${NC}"
-                    fi
-                done < "$NODES_DB"
-                firewall-cmd --reload >/dev/null 2>&1
-            fi
-            ;;
-        *)
-            if [ -f "$NODES_DB" ]; then
-                while IFS= read -r line; do
-                    [[ -z "$line" ]] && continue
-                    local old_p
-                    old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
-                    if [[ -n "$old_p" ]]; then
-                        iptables -D INPUT -p tcp --dport "$old_p" -j ACCEPT 2>/dev/null || true
-                        echo -e "${YELLOW}[Iptables] 已移除旧端口: ${old_p}${NC}"
-                    fi
-                done < "$NODES_DB"
-            fi
-            ;;
-    esac
 }
 
 manage_firewall_port() {
@@ -243,18 +194,6 @@ select_best_reality_domain() {
 add_vless_reality_server_config() {
     check_and_install_python
 
-    # 清理旧 Reality 防火墙规则
-    cleanup_old_reality_firewall_rules
-
-    # 自动重置旧配置与账本
-    if [ -f "$CONFIG_FILE" ]; then
-        echo -e "${YELLOW}[INFO] 检测到旧配置文件，正在自动重置初始化...${NC}"
-        rm -f "$CONFIG_FILE"
-    fi
-    if [ -f "$NODES_DB" ]; then
-        rm -f "$NODES_DB"
-    fi
-
     local host_name
     host_name=$(hostname)
 
@@ -306,36 +245,49 @@ add_vless_reality_server_config() {
 
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
-    local node_name="vless-reality-vision-in-${host_name}"
+    local node_name="vless-reality-vision-out-${host_name}"
 
-    # 使用 Python 安全写入纯入站 YAML
+    # 使用 Python 安全写入多协议支持的 YAML 结构
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
+import yaml
 
 config_path, node_name, port, uuid, private_key, short_id, server_name = sys.argv[1:8]
 
-snippet = f"""listeners:
-  - name: "{node_name}"
-    type: vless
-    port: {port}
-    listen: 0.0.0.0
-    users:
-      - username: 1
-        uuid: {uuid}
-        flow: xtls-rprx-vision
-    reality-config:
-      dest: "{server_name}:443"
-      private-key: "{private_key}"
-      short-id:
-        - "{short_id}"
-      server-names:
-        - "{server_name}"
-"""
+data = {"listeners": []}
+if os.path.exists(config_path):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+                data["listeners"] = loaded["listeners"]
+    except Exception:
+                pass
+
+# 移除同名旧监听器
+data["listeners"] = [l for l in data["listeners"] if l.get("name") != node_name]
+
+new_listener = {
+    "name": node_name,
+    "type": "vless",
+    "port": int(port),
+    "listen": "0.0.0.0",
+    "users": [
+        {"username": "1", "uuid": uuid, "flow": "xtls-rprx-vision"}
+    ],
+    "reality-config": {
+        "dest": f"{server_name}:443",
+        "private-key": private_key,
+        "short-id": [short_id],
+        "server-names": [server_name]
+    }
+}
+data["listeners"].append(new_listener)
 
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f:
-    f.write(snippet)
+    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 PY_SCRIPT
 
     # 持久化账本记录
@@ -344,7 +296,7 @@ PY_SCRIPT
     systemctl restart mihomo
 
     echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  VLESS-REALITY 服务端入站已成功写入配置并重启！${NC}"
+    echo -e "${GREEN}  VLESS-REALITY 服务端入站已成功追加写入并重启！${NC}"
     echo -e "${GREEN}========================================================${NC}"
     echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
     echo -e "监听端口 : ${YELLOW}${port}${NC}"
@@ -354,10 +306,148 @@ PY_SCRIPT
     echo -e "${GREEN}========================================================${NC}"
 }
 
-# 交互菜单测试
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    echo -e "${CYAN}=== YinDun Config 管理脚本 ==="
+# ------------------------------------------------------------------------------
+# 5. Hysteria 2 (自签证书 + SHA-256 指纹) 服务端核心写入模块
+# ------------------------------------------------------------------------------
+add_hysteria2_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}        开始配置并写入 Hysteria 2 服务端入站             ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto"
+    local manual_port=""
+    if [[ "$port_mode_choice" == "2" ]]; then
+        port_mode="manual"
+        read -p "请输入要指定的 UDP 端口 [20000-60000]: " manual_port
+    fi
+
+    local port
+    port=$(get_available_port "$port_mode" "$manual_port")
+    if [[ -z "$port" ]]; then
+        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
+        return 1
+    fi
+
+    local hy2_password
+    hy2_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
+
+    # 生成自签证书与私钥
+    local cert_dir="${CONFIG_DIR}/cert"
+    mkdir -p "$cert_dir"
+    local cert_file="${cert_dir}/hy2.crt"
+    local key_file="${cert_dir}/hy2.key"
+
+    echo -e "${CYAN}[INFO] 正在为 Hysteria 2 生成自签 TLS 证书...${NC}"
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=gateway.icloud.com" 2>/dev/null
+
+    # 计算证书的 SHA-256 指纹
+    local sha256_fingerprint
+    sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+
+    if [[ -z "$sha256_fingerprint" ]]; then
+        echo -e "${RED}[ERROR] 证书 SHA-256 指纹计算失败！${NC}"
+        return 1
+    fi
+
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
+
+    local node_name="hysteria2-out-${host_name}"
+
+    # 使用 Python 安全写入多协议支持的 YAML 结构 (追加到 listeners 中)
+    python3 - "$CONFIG_FILE" "$node_name" "$port" "$hy2_password" "$cert_file" "$key_file" << 'PY_SCRIPT'
+import sys
+import os
+import yaml
+
+config_path, node_name, port, password, cert_file, key_file = sys.argv[1:7]
+
+data = {"listeners": []}
+if os.path.exists(config_path):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+                data["listeners"] = loaded["listeners"]
+    except Exception:
+        pass
+
+# 移除同名旧监听器
+data["listeners"] = [l for l in data["listeners"] if l.get("name") != node_name]
+
+new_listener = {
+    "name": node_name,
+    "type": "hysteria2",
+    "port": int(port),
+    "listen": "0.0.0.0",
+    "users": [
+        {"username": "1", "password": password}
+    ],
+    "certificate": cert_file,
+    "private-key": key_file
+}
+data["listeners"].append(new_listener)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+PY_SCRIPT
+
+    # 持久化账本记录到 all_nodes.txt
+    echo "TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|IP=${server_ip}" >> "${NODES_DB}"
+
+    systemctl restart mihomo
+
+    echo -e "\n${GREEN}========================================================${NC}"
+    echo -e "${GREEN}  Hysteria 2 服务端入站已成功追加写入并重启！${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
+    echo -e "监听端口 : ${YELLOW}${port} (UDP)${NC}"
+    echo -e "连接密码 : ${YELLOW}${hy2_password}${NC}"
+    echo -e "SHA-256指纹: ${YELLOW}${sha256_fingerprint}${NC}"
+    echo -e "数据留档 : ${CYAN}${NODES_DB}${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 6. 交互式主菜单
+# ------------------------------------------------------------------------------
+show_menu() {
+    clear
+    echo -e "${CYAN}========================================================${NC}"
+    echo -e "${GREEN}        YinDun Server Node Configuration Menu          ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
     echo "1. 添加 VLESS-REALITY 服务端节点"
-    read -p "请选择操作 [1]: " choice
-    add_vless_reality_server_config
+    echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + 指纹)"
+    echo "0. 退出脚本"
+    echo -e "${CYAN}========================================================${NC}"
+    read -p "请选择操作 [1-2]: " choice
+
+    case "$choice" in
+        1)
+            add_vless_reality_server_config
+            ;;
+        2)
+            add_hysteria2_server_config
+            ;;
+        0)
+            exit 0
+            ;;
+        *)
+            echo -e "${RED}[ERROR] 无效的选择！${NC}"
+            ;;
+    esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    show_menu
 fi
