@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已全面支持 Snell v6 及模式解析）
+# Description: 本地订阅分发守护进程（已完美优化控制台多端订阅地址展示）
 # ==============================================================================
 
 RED="\033[31m"
@@ -366,8 +366,14 @@ start_daemon() {
     nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
     echo $! > "$PID_FILE"
 
-    echo -e "\n${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
-    echo -e "主订阅链接: ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
+    echo -e "\n${GREEN}========================================================${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+    echo -e "1. Base64 聚合订阅 (通用/Clash): ${CYAN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
+    echo -e "2. 明文链接列表 (Raw Links)   : ${CYAN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
+    echo -e "3. Mihomo 原生完整 YAML 配置  : ${CYAN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
+    echo -e "4. Sing-box 客户端 JSON 配置  : ${CYAN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
+    echo -e "${GREEN}========================================================${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
