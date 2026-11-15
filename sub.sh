@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已完美优化控制台多端订阅地址展示）
+# Description: 本地订阅分发守护进程（已全面集成 Sing-box Snell v6 出站支持）
 # ==============================================================================
 
 RED="\033[31m"
@@ -206,11 +206,11 @@ if os.path.exists(nodes_db):
     transport: {transport_type}""")
                 all_links.append(f"mierus://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?profile={urllib.parse.quote(name)}&port={port_val}&protocol={transport_type}#{urllib.parse.quote(name)}")
 
-            # E. Snell v6 (Mihomo 原生入站 v6，支持 mode)
+            # E. Snell v6 (同时支持 Mihomo 与 Sing-box v1.14+ 原生出站)
             elif node_type == "snell":
                 name = parts.get("NAME", "snell-node").replace("-in-", "-out-")
                 ip, port_val, psk = parts.get("IP"), parts.get("PORT"), parts.get("PSK")
-                v_version = parts.get("VERSION", "6")
+                v_version = int(parts.get("VERSION", "6"))
                 v_mode = parts.get("MODE", "default")
                 node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
@@ -221,6 +221,15 @@ if os.path.exists(nodes_db):
     version: {v_version}
     udp: true
     mode: {v_mode}""")
+                box_outbounds.append({
+                    "type": "snell",
+                    "tag": name,
+                    "server": ip,
+                    "server_port": int(port_val),
+                    "version": v_version,
+                    "psk": psk,
+                    "mode": v_mode
+                })
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
 proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
