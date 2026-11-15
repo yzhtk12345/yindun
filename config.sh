@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru 与 Snell 原生入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru 与 Snell v6 原生入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -231,8 +231,7 @@ add_vless_reality_server_config() {
     echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto"
-    local manual_port=""
+    local port_mode="auto" manual_port=""
     [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入要指定的端口 [20000-60000]: " manual_port
 
     local port
@@ -484,7 +483,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] Mieru (TCP & UDP) 服务端入站配置完成！${NC}"
 }
 
-# 5. Snell (Mihomo 原生入站)
+# 5. Snell v6 (Mihomo 原生入站 v6)
 add_snell_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -493,7 +492,7 @@ add_snell_server_config() {
     host_name=$(hostname)
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Snell (原生入站) 服务端入站        ${NC}"
+    echo -e "${CYAN}        开始配置并写入 Snell v6 (原生入站) 服务端        ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
@@ -504,18 +503,22 @@ add_snell_server_config() {
     port=$(get_available_port "$port_mode" "$manual_port")
     [[ -z "$port" ]] && return 1
 
+    read -p "请选择 Snell v6 模式 [1. default (抗封锁流量塑形) 2. unshaped (极致吞吐性能)] (默认 1): " mode_choice
+    local snell_mode="default"
+    [[ "$mode_choice" == "2" ]] && snell_mode="unshaped"
+
     local snell_psk
-    snell_psk=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
+    snell_psk=$(openssl rand -hex 16 2>/dev/null | tr -d '\r\n')
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "tcp" "YinDun-Snell-${port}"
     local node_name="snell-in-${host_name}"
-    local db_record="TYPE=snell|NAME=${node_name}|PORT=${port}|PSK=${snell_psk}|IP=${server_ip}"
+    local db_record="TYPE=snell|NAME=${node_name}|PORT=${port}|PSK=${snell_psk}|VERSION=6|MODE=${snell_mode}|IP=${server_ip}"
 
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$snell_psk" "$db_record" << 'PY_EOF'
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$snell_psk" "$snell_mode" "$db_record" << 'PY_EOF'
 import sys, os, yaml
-config_path, nodes_db, node_name, port_str, psk, db_record = sys.argv[1:7]
+config_path, nodes_db, node_name, port_str, psk, mode, db_record = sys.argv[1:8]
 port = int(port_str)
 
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=snell|")] if os.path.exists(nodes_db) else []
@@ -536,19 +539,21 @@ listeners.append({
     "port": port,
     "listen": "0.0.0.0",
     "psk": psk,
-    "version": 4,
-    "udp": True
+    "version": 6,
+    "udp": True,
+    "mode": mode
 })
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
     systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] Snell 原生入站配置已写入并重启！${NC}"
+    echo -e "${GREEN}[SUCCESS] Snell v6 原生入站配置已写入并重启！${NC}"
     echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
     echo -e "监听端口 : ${YELLOW}${port} (TCP)${NC}"
     echo -e "PSK 密码 : ${YELLOW}${snell_psk}${NC}"
-    echo -e "协议版本 : ${YELLOW}v4 (UDP over TCP)${NC}"
+    echo -e "协议版本 : ${YELLOW}v6 (UDP over TCP)${NC}"
+    echo -e "运行模式 : ${YELLOW}${snell_mode}${NC}"
 }
 
 show_menu() {
@@ -560,7 +565,7 @@ show_menu() {
     echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + SHA-256 指纹)"
     echo "3. 添加 TUIC v5 服务端节点 (自签证书 + BBR + SNI 隔离)"
     echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
-    echo "5. 添加 Snell (Mihomo 原生入站 v4) 服务端节点"
+    echo "5. 添加 Snell v6 (Mihomo 原生入站) 服务端节点"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
     read -p "请选择操作 [0-5]: " choice
