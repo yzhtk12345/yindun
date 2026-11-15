@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 采用独立 Python 生成器架构，彻底根除远程管道 EOF 冲突
+# Description: 纯净轻量版本地订阅分发守护进程
 # ==============================================================================
 
 RED="\033[31m"
@@ -149,7 +149,7 @@ stop_daemon() {
     fi
 }
 
-# 1. 独立生成订阅文件解析器 (generate_sub.py)，彻底杜绝管道引号转义问题
+# 1. 编写独立的订阅文件生成脚本
 prepare_subscription_generator() {
     cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
 import os
@@ -221,15 +221,8 @@ if os.path.exists(nodes_db):
                     "tls": {
                         "enabled": True,
                         "server_name": domain,
-                        "utls": {
-                            "enabled": True,
-                            "fingerprint": "chrome"
-                        },
-                        "reality": {
-                            "enabled": True,
-                            "public_key": pub,
-                            "short_id": shortid
-                        }
+                        "utls": {"enabled": True, "fingerprint": "chrome"},
+                        "reality": {"enabled": True, "public_key": pub, "short_id": shortid}
                     }
                 }
                 box_outbounds.append(box_dict)
@@ -238,7 +231,7 @@ if os.path.exists(nodes_db):
                 vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                 all_links.append(vless_link)
 
-            # B. 解析 Hysteria 2 节点（附带 SHA-256 指纹校验）
+            # B. 解析 Hysteria 2 节点
             elif node_type == "hysteria2":
                 name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
                 ip = parts.get("IP", "127.0.0.1")
@@ -297,19 +290,6 @@ dns:
   cache-algorithm: "arc"
   enhanced-mode: "fake-ip"
   fake-ip-range: "198.18.0.1/16"
-  fake-ip-filter:
-    - "+.lan"
-    - "+.local"
-    - "+.msftconnecttest.com"
-    - "+.msftncsi.com"
-    - "localhost.ptlogin2.qq.com"
-    - "localhost.sec.qq.com"
-    - "+.in-addr.arpa"
-    - "+.ip6.arpa"
-    - "time.*.com"
-    - "time.*.gov"
-    - "pool.ntp.org"
-    - "localhost.work.weixin.qq.com"
   default-nameserver: ["223.5.5.5", "119.29.29.29"]
   nameserver:
     - "https://1.1.1.1/dns-query"
@@ -361,62 +341,13 @@ auto_outbounds = node_names if node_names else ["direct"]
 
 singbox_full_config = {
     "log": {"level": "info", "timestamp": True},
-    "http_clients": [{"tag": "rule-set-direct"}],
-    "dns": {
-        "servers": [
-            {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
-            {"type": "udp", "tag": "dns-cn", "server": "223.5.5.5", "server_port": 53},
-            {"type": "https", "tag": "dns-proxy", "server": "dns.google", "domain_resolver": "dns-cn", "detour": "proxy"}
-        ],
-        "rules": [
-            {"rule_set": ["geosite-cn"], "action": "route", "server": "dns-cn"},
-            {"query_type": ["A", "AAAA"], "action": "route", "server": "fakeip"}
-        ],
-        "final": "dns-proxy",
-        "strategy": "prefer_ipv4",
-        "cache_capacity": 8192,
-        "optimistic": {"enabled": True, "timeout": "1h"},
-        "timeout": "10s",
-        "reverse_mapping": True
-    },
-    "inbounds": [
-        {
-            "type": "tun",
-            "tag": "tun-in",
-            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-            "auto_route": True,
-            "strict_route": True,
-            "mtu": 1420
-        }
-    ],
+    "inbounds": [{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"]}],
     "outbounds": [
         {"type": "selector", "tag": "proxy", "default": "auto", "outbounds": selector_outbounds},
-        {"type": "urltest", "tag": "auto", "outbounds": auto_outbounds, "url": "https://www.gstatic.com/generate_204", "interval": "10m", "tolerance": 30, "idle_timeout": "30m"},
+        {"type": "urltest", "tag": "auto", "outbounds": auto_outbounds, "url": "https://www.gstatic.com/generate_204"},
         {"type": "direct", "tag": "direct"}
     ] + box_outbounds,
-    "route": {
-        "default_http_client": "rule-set-direct",
-        "default_domain_resolver": "dns-cn",
-        "auto_detect_interface": True,
-        "rule_set": [
-            {"tag": "geosite-cn", "type": "remote", "format": "binary", "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs"},
-            {"tag": "geoip-cn", "type": "remote", "format": "binary", "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs"}
-        ],
-        "rules": [
-            {"inbound": ["tun-in"], "protocol": ["dns"], "action": "hijack-dns"},
-            {"clash_mode": "Global", "action": "route", "outbound": "proxy"},
-            {"ip_is_private": True, "action": "route", "outbound": "direct"},
-            {"rule_set": ["geosite-cn"], "action": "route", "outbound": "direct"},
-            {"rule_set": ["geoip-cn"], "action": "route", "outbound": "direct"},
-            {"clash_mode": "Direct", "action": "route", "outbound": "direct"},
-            {"network": ["tcp", "udp"], "port": 853, "action": "reject"}
-        ],
-        "final": "proxy"
-    },
-    "experimental": {
-        "cache_file": {"enabled": True, "store_dns": True},
-        "clash_api": {"external_controller": "127.0.0.1:9090", "external_ui": "ui", "default_mode": "Rule"}
-    }
+    "route": {"final": "proxy"}
 }
 
 with open(box_links_path, "w", encoding="utf-8") as f:
@@ -427,7 +358,7 @@ with open(all_links_path, "w", encoding="utf-8") as f:
 EOF
 }
 
-# 2. 独立生成 sub_server.py 脚本文件
+# 2. 编写独立的 HTTP 服务端脚本
 prepare_python_server() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
 import http.server
@@ -449,7 +380,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
         if user_token != token:
             self.send_response(403)
             self.end_headers()
-            self.wfile.write(b"Access Denied: Invalid or Missing Token")
+            self.wfile.write(b"Access Denied")
             return
 
         if parsed_path.path in ["/", "/all"]:
@@ -500,7 +431,6 @@ EOF
 start_daemon() {
     if [ ! -f "$NODES_DB" ]; then
         echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
-        echo -e "${YELLOW}[INFO] 请先运行 config.sh 生成服务端节点！${NC}"
         return 1
     fi
 
@@ -510,14 +440,11 @@ start_daemon() {
         openssl rand -hex 32 > "$TOKEN_FILE"
     fi
 
-    local raw_port
-    raw_port=$(get_web_port)
     local web_port
-    web_port=$(echo "$raw_port" | grep -oE '[0-9]+' | tail -n 1)
-
+    web_port=$(get_web_port | grep -oE '[0-9]+' | tail -n 1)
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-    echo -e "${CYAN}[INFO] 正在生成并刷新客户端订阅文件...${NC}"
+    echo -e "${CYAN}[INFO] 正在生成双协议订阅文件...${NC}"
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
 
@@ -532,25 +459,15 @@ start_daemon() {
     local new_pid=$!
     echo "$new_pid" > "$PID_FILE"
 
-    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "\n${GREEN}========================================================${NC}"
     echo -e "${GREEN}  YinDun 客户端订阅守护进程已在后台成功启动！${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "服务进程 PID : ${YELLOW}${new_pid}${NC}"
-    echo -e "当前服务端口 : ${YELLOW}${web_port}${NC} (已持久化固化)"
-    echo -e "安全 Token   : ${YELLOW}${SUB_TOKEN}${NC}"
-    echo -e "${CYAN}--------------------------------------------------------${NC}"
-    echo -e "1. 主订阅链接 (支持直接作为客户端订阅源导入，返回 Base64):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
-    echo -e "2. 原文明文链接 (all_links.txt):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Sing-box 专属订阅 (高级 Fake-IP 客户端配置):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
-    echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] VLESS-REALITY 与 Hysteria 2 双端订阅均已就绪！${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+    echo -e "服务端口 : ${YELLOW}${web_port}${NC}"
+    echo -e "安全 Token : ${YELLOW}${SUB_TOKEN}${NC}"
+    echo -e "Mihomo 订阅: ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
+    echo -e "${GREEN}========================================================${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
