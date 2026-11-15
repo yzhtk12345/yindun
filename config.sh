@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY 与 Hysteria 2 服务端入站管理（含自签证书、SHA-256 指纹与空行分隔）
+# Description: 支持 VLESS-REALITY 与 Hysteria 2 服务端入站管理（净化无转义符号版）
 # ==============================================================================
 
 RED="\033[31m"
@@ -60,7 +60,7 @@ get_available_port() {
             target_port="$manual_port"
         fi
 
-        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] \vert{}\vert{} [ "$target_port" -gt 65535 ]; then
+        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
             echo -e "${RED}[ERROR] 端口输入无效！${NC}" >&2
             return 1
         fi
@@ -96,7 +96,6 @@ detect_firewall() {
     fi
 }
 
-# 按协议类型清理旧防火墙规则，防止重复堆积
 cleanup_firewall_by_type() {
     local target_type="$1"
     local fw_type
@@ -106,7 +105,7 @@ cleanup_firewall_by_type() {
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if echo "$line" \vert{} grep -q "TYPE=${target_type}|"; then
+            if echo "$line" | grep -q "TYPE=${target_type}|"; then
                 local old_p
                 old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
                 if [[ -n "$old_p" ]]; then
@@ -147,7 +146,7 @@ manage_firewall_port() {
     fw_type=$(detect_firewall)
 
     local protos=()
-    if [[ "$proto" == "tcp/udp" \vert{}\vert{} "$proto" == "both" ]]; then
+    if [[ "$proto" == "tcp/udp" || "$proto" == "both" ]]; then
         protos=("tcp" "udp")
     else
         protos=("$proto")
@@ -203,11 +202,11 @@ select_best_reality_domain() {
 
     for domain in "${REALITY_CANDIDATES[@]}"; do
         local time_cost
-        time_cost=$(curl -o /dev/null -s -w "\%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
+        time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 域名: ${domain} \vert{} 延迟: ${ms} ms" >&2
+            echo -e "  -> 域名: ${domain} | 延迟: ${ms} ms" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
@@ -223,7 +222,6 @@ select_best_reality_domain() {
     echo -n "$best_domain"
 }
 
-# 安全更新账本与 YAML 配置的通用 Python 调用（通过环境变量传参，彻底避免管道 EOF 冲突）
 update_server_yaml_and_db() {
     export YD_CONFIG_FILE="$CONFIG_FILE"
     export YD_NODES_DB="$NODES_DB"
@@ -236,7 +234,6 @@ proto_type = os.environ["YD_PROTO_TYPE"]
 node_name = os.environ["YD_NODE_NAME"]
 db_record = os.environ["YD_DB_RECORD"]
 
-# 1. 更新 all_nodes.txt（替换同类型旧记录，保留其他协议记录）
 existing_records = []
 if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
@@ -248,7 +245,6 @@ existing_records.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f:
     f.write("\n".join(existing_records) + "\n")
 
-# 2. 更新 config.yaml（保留其他协议监听器，并确保各协议块之间有一行空行）
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -302,9 +298,6 @@ with open(config_path, "w", encoding="utf-8") as f:
 '
 }
 
-# ------------------------------------------------------------------------------
-# VLESS-REALITY 服务端核心写入模块
-# ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
     check_and_install_python
     cleanup_firewall_by_type "vless-reality"
@@ -348,7 +341,7 @@ add_vless_reality_server_config() {
     private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
     public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
 
-    if [[ -z "$private_key" \vert{}\vert{} -z "$public_key" ]]; then
+    if [[ -z "$private_key" || -z "$public_key" ]]; then
         echo -e "${RED}[ERROR] 密钥对生成失败！${NC}"
         return 1
     fi
@@ -369,7 +362,7 @@ add_vless_reality_server_config() {
     export YD_PRIV="$private_key"
     export YD_SHORTID="$short_id"
     export YD_DOMAIN="$server_name"
-    export YD_DB_RECORD="TYPE=vless-reality|NAME=${node_name}\vert{}PORT=${port}|UUID=${uuid}\vert{}PRIV=${private_key}|PUB=${public_key}\vert{}SHORTID=${short_id}|DOMAIN=${server_name}\vert{}IP=${server_ip}"
+    export YD_DB_RECORD="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
 
     update_server_yaml_and_db
 
@@ -386,9 +379,6 @@ add_vless_reality_server_config() {
     echo -e "${GREEN}========================================================${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# Hysteria 2 (自签证书 + SHA-256 指纹 + ALPN h3) 服务端核心写入模块
-# ------------------------------------------------------------------------------
 add_hysteria2_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -470,7 +460,7 @@ add_hysteria2_server_config() {
 show_menu() {
     clear
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}        YinDun Server Node Configuration Menu${NC}"
+    echo -e "${GREEN}        YinDun Server Node Configuration Menu          ${NC}"
     echo -e "${CYAN}========================================================${NC}"
     echo "1. 添加 VLESS-REALITY 服务端节点"
     echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + SHA-256 指纹)"
@@ -494,6 +484,6 @@ show_menu() {
     esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     show_menu
 fi
