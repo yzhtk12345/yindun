@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY 与 Hysteria 2 (自签证书及 SHA-256 指纹) 的服务端配置管理
+# Description: 支持多协议（VLESS-REALITY 与 Hysteria 2）服务端入站安全写入与精准空行分隔
 # ==============================================================================
 
 RED="\033[31m"
@@ -247,7 +247,6 @@ add_vless_reality_server_config() {
 
     local node_name="vless-reality-vision-out-${host_name}"
 
-    # 使用 Python 安全写入多协议支持的 YAML 结构
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$uuid" "$private_key" "$short_id" "$server_name" << 'PY_SCRIPT'
 import sys
 import os
@@ -263,7 +262,7 @@ if os.path.exists(config_path):
             if loaded and isinstance(loaded, dict) and "listeners" in loaded:
                 data["listeners"] = loaded["listeners"]
     except Exception:
-                pass
+        pass
 
 # 移除同名旧监听器
 data["listeners"] = [l for l in data["listeners"] if l.get("name") != node_name]
@@ -290,7 +289,6 @@ with open(config_path, "w", encoding="utf-8") as f:
     yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 PY_SCRIPT
 
-    # 持久化账本记录
     echo "TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}" >> "${NODES_DB}"
 
     systemctl restart mihomo
@@ -338,7 +336,6 @@ add_hysteria2_server_config() {
     local hy2_password
     hy2_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
 
-    # 生成自签证书与私钥
     local cert_dir="${CONFIG_DIR}/cert"
     mkdir -p "$cert_dir"
     local cert_file="${cert_dir}/hy2.crt"
@@ -347,7 +344,6 @@ add_hysteria2_server_config() {
     echo -e "${CYAN}[INFO] 正在为 Hysteria 2 生成自签 TLS 证书...${NC}"
     openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=gateway.icloud.com" 2>/dev/null
 
-    # 计算证书的 SHA-256 指纹
     local sha256_fingerprint
     sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
@@ -363,7 +359,6 @@ add_hysteria2_server_config() {
 
     local node_name="hysteria2-out-${host_name}"
 
-    # 使用 Python 安全写入多协议支持的 YAML 结构 (追加到 listeners 中)
     python3 - "$CONFIG_FILE" "$node_name" "$port" "$hy2_password" "$cert_file" "$key_file" << 'PY_SCRIPT'
 import sys
 import os
@@ -389,9 +384,9 @@ new_listener = {
     "type": "hysteria2",
     "port": int(port),
     "listen": "0.0.0.0",
-    "users": [
-        {"username": "1", "password": password}
-    ],
+    "users": {
+        "1": password
+    },
     "certificate": cert_file,
     "private-key": key_file
 }
@@ -402,7 +397,6 @@ with open(config_path, "w", encoding="utf-8") as f:
     yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 PY_SCRIPT
 
-    # 持久化账本记录到 all_nodes.txt
     echo "TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|IP=${server_ip}" >> "${NODES_DB}"
 
     systemctl restart mihomo
@@ -448,6 +442,6 @@ show_menu() {
     esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     show_menu
 fi
