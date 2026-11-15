@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯净轻量版本地订阅分发守护进程
+# Description: 纯净轻量版本地订阅分发守护进程（精简终端输出版）
 # ==============================================================================
 
 RED="\033[31m"
@@ -459,13 +459,19 @@ start_daemon() {
     local new_pid=$!
     echo "$new_pid" > "$PID_FILE"
 
-    echo -e "\n${GREEN}========================================================${NC}"
+    echo -e "\n${CYAN}========================================================${NC}"
     echo -e "${GREEN}  YinDun 客户端订阅守护进程已在后台成功启动！${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "${CYAN}========================================================${NC}"
     echo -e "服务端口 : ${YELLOW}${web_port}${NC}"
     echo -e "安全 Token : ${YELLOW}${SUB_TOKEN}${NC}"
-    echo -e "Mihomo 订阅: ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "${CYAN}--------------------------------------------------------${NC}"
+    echo -e "1. 主订阅链接 (通用 Base64 导入源):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
+    echo -e "2. Sing-box 专属订阅 (box_links.json):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
+    echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
+    echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
+    echo -e "${CYAN}========================================================${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
