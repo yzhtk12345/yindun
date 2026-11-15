@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已修复语法错误与 TUIC 订阅解析）
+# Description: 本地订阅分发守护进程（已完美集成 Mieru TCP/UDP 解析，并自动跳过 Sing-box）
 # ==============================================================================
 
 RED="\033[31m"
@@ -319,6 +319,30 @@ if os.path.exists(nodes_db):
                 encoded_name = urllib.parse.quote(name)
                 tuic_link = f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{encoded_name}"
                 all_links.append(tuic_link)
+
+            # D. 解析 Mieru TCP / UDP 节点 (仅加入 Mihomo 与通用订阅，Sing-box 自动跳过)
+            elif node_type in ["mieru-tcp", "mieru-udp"]:
+                name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
+                ip = parts.get("IP", "127.0.0.1")
+                port_val = parts.get("PORT", "443")
+                username = parts.get("USER", "")
+                password = parts.get("PASS", "")
+                transport_type = "TCP" if node_type == "mieru-tcp" else "UDP"
+
+                node_names.append(name)
+
+                mi_proxy = f"""  - name: "{name}"
+    type: mieru
+    server: {ip}
+    port: {port_val}
+    username: {username}
+    password: {password}
+    transport: {transport_type}"""
+                mi_proxies.append(mi_proxy)
+
+                encoded_name = urllib.parse.quote(name)
+                mieru_link = f"mieru://{username}:{password}@{ip}:{port_val}?transport={transport_type}#{encoded_name}"
+                all_links.append(mieru_link)
 
 proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
 
