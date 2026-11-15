@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 纯客户端订阅分发守护进程：采用 Python 原生写入，彻底根除管道 EOF 冲突
+# Description: 支持 VLESS-REALITY 与 Hysteria 2（SHA-256 指纹校验）的双端动态订阅服务
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,12 +148,13 @@ stop_daemon() {
     fi
 }
 
-# 采用 Python 脚本在本地直接写入 sub_server.py，完美避开 Bash 管道流解析冲突
+# 独立生成 sub_server.py 脚本，完美支持多协议动态订阅解析
 prepare_python_server() {
-    python3 - << 'PYTHON_WRITER'
+    export YD_PYTHON_SERVER_FILE="$PYTHON_SERVER_FILE"
+    python3 -c '
 import os
 
-server_code = r'''import http.server
+server_code = r"""import http.server
 import urllib.parse
 import sys
 import os
@@ -188,7 +189,10 @@ def generate_subscriptions():
                         k, v = item.split("=", 1)
                         parts[k] = v
 
-                if parts.get("TYPE") == "vless-reality":
+                node_type = parts.get("TYPE")
+
+                # 1. 解析 VLESS-REALITY 节点
+                if node_type == "vless-reality":
                     name = parts.get("NAME", "node").replace("-in-", "-out-")
                     ip = parts.get("IP", "127.0.0.1")
                     port_val = parts.get("PORT", "443")
@@ -199,7 +203,7 @@ def generate_subscriptions():
 
                     node_names.append(name)
 
-                    mi_proxy = f"""  - name: "{name}"
+                    mi_proxy = f\"\"\"  - name: "{name}"
     type: vless
     server: {ip}
     port: {port_val}
@@ -213,7 +217,7 @@ def generate_subscriptions():
     reality-opts:
       public-key: {pub}
       short-id: {shortid}
-      support-x25519mlkem768: false"""
+      support-x25519mlkem768: false\"\"\"
                     mi_proxies.append(mi_proxy)
 
                     box_dict = {
@@ -243,9 +247,51 @@ def generate_subscriptions():
                     vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
                     all_links.append(vless_link)
 
-    proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
+                # 2. 解析 Hysteria 2 节点（支持自签证书 SHA-256 指纹校验）
+                elif node_type == "hysteria2":
+                    name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
+                    ip = parts.get("IP", "127.0.0.1")
+                    port_val = parts.get("PORT", "443")
+                    password = parts.get("PASSWORD", "")
+                    fingerprint = parts.get("FINGERPRINT", "")
+                    sni = parts.get("SNI", "gateway.icloud.com")
 
-    mihomo_full_config = f"""port: 7890
+                    node_names.append(name)
+
+                    mi_proxy = f\"\"\"  - name: "{name}"
+    type: hysteria2
+    server: {ip}
+    port: {port_val}
+    password: {password}
+    sni: {sni}
+    skip-cert-verify: false
+    fingerprint: {fingerprint}
+    alpn:
+      - h3\"\"\"
+                    mi_proxies.append(mi_proxy)
+
+                    box_dict = {
+                        "type": "hysteria2",
+                        "tag": name,
+                        "server": ip,
+                        "server_port": int(port_val),
+                        "password": password,
+                        "tls": {
+                            "enabled": True,
+                            "server_name": sni,
+                            "insecure": True,
+                            "alpn": ["h3"]
+                        }
+                    }
+                    box_outbounds.append(box_dict)
+
+                    encoded_name = urllib.parse.quote(name)
+                    hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
+                    all_links.append(hy2_link)
+
+    proxies_list_6 = "\n".join([f\x27      - "{n}"\x27 for n in node_names]) if node_names else \x27      - "DIRECT"\x27
+
+    mihomo_full_config = f\"\"\"port: 7890
 allow-lan: true
 mode: rule
 log-level: info
@@ -282,7 +328,7 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-""" + ("\n".join(mi_proxies) if mi_proxies else "") + f"""
+\"\"\" + ("\n\n".join(mi_proxies) if mi_proxies else "") + f\"\"\"
 
 proxy-groups:
   - name: 负载均衡
@@ -304,7 +350,7 @@ proxy-groups:
   - name: 🌍选择代理节点
     type: select
     proxies:
-      - 负载均衡                                     
+      - 负载均衡
       - 自动选择
       - DIRECT
 {proxies_list_6}
@@ -314,7 +360,7 @@ rules:
   - GEOSITE,CN,DIRECT
   - GEOIP,CN,DIRECT
   - MATCH,🌍选择代理节点
-"""
+\"\"\"
     with open(mi_links_path, "w", encoding="utf-8") as f:
         f.write(mihomo_full_config)
 
@@ -491,58 +537,58 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed_path.query)
-        user_token = query_params.get('token', [''])[0]
+        user_token = query_params.get(\x27token\x27, [\x27\x27])[0]
 
         if user_token != token:
             self.send_response(403)
             self.end_headers()
-            self.wfile.write(b'Access Denied: Invalid or Missing Token')
+            self.wfile.write(b\x27Access Denied: Invalid or Missing Token\x27)
             return
 
         generate_subscriptions()
 
-        if parsed_path.path in ['/', '/all']:
+        if parsed_path.path in [\x27/\x27, \x27/all\x27]:
             self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header(\x27Content-Type\x27, \x27text/plain; charset=utf-8\x27)
             self.end_headers()
-            with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
+            with open(os.path.join(config_dir, \x27all_links.txt\x27), \x27rb\x27) as f:
                 raw_data = f.read()
                 self.wfile.write(base64.b64encode(raw_data))
-        elif parsed_path.path == '/raw':
+        elif parsed_path.path == \x27/raw\x27:
             self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header(\x27Content-Type\x27, \x27text/plain; charset=utf-8\x27)
             self.end_headers()
-            with open(os.path.join(config_dir, 'all_links.txt'), 'rb') as f:
+            with open(os.path.join(config_dir, \x27all_links.txt\x27), \x27rb\x27) as f:
                 self.wfile.write(f.read())
-        elif parsed_path.path == '/box':
+        elif parsed_path.path == \x27/box\x27:
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header(\x27Content-Type\x27, \x27application/json; charset=utf-8\x27)
             self.end_headers()
-            with open(os.path.join(config_dir, 'box_links.json'), 'rb') as f:
+            with open(os.path.join(config_dir, \x27box_links.json\x27), \x27rb\x27) as f:
                 self.wfile.write(f.read())
-        elif parsed_path.path == '/mi':
+        elif parsed_path.path == \x27/mi\x27:
             self.send_response(200)
-            self.send_header('Content-Type', 'text/yaml; charset=utf-8')
+            self.send_header(\x27Content-Type\x27, \x27text/yaml; charset=utf-8\x27)
             self.end_headers()
-            with open(os.path.join(config_dir, 'mi_links.yaml'), 'rb') as f:
+            with open(os.path.join(config_dir, \x27mi_links.yaml\x27), \x27rb\x27) as f:
                 self.wfile.write(f.read())
         else:
             self.send_response(404)
             self.end_headers()
-            self.wfile.write(b'Not Found')
+            self.wfile.write(b\x27Not Found\x27)
 
     def log_message(self, format, *args):
         pass
 
-server = http.server.HTTPServer(('0.0.0.0', port), MultiSubHandler)
+server = http.server.HTTPServer((\x270.0.0.0\x27, port), MultiSubHandler)
 server.serve_forever()
-'''
+"""
 
-os.makedirs(r"/etc/yindun/mihomo", exist_ok=True)
-with open(r"/etc/yindun/mihomo/sub_server.py", "w", encoding="utf-8") as f:
+target_file = os.environ["YD_PYTHON_SERVER_FILE"]
+os.makedirs(os.path.dirname(target_file), exist_ok=True)
+with open(target_file, "w", encoding="utf-8") as f:
     f.write(server_code)
-print("[INFO] sub_server.py generated successfully via python writer.")
-PYTHON_WRITER
+'
 }
 
 start_daemon() {
@@ -595,7 +641,7 @@ start_daemon() {
     echo -e "4. Mihomo 专属订阅 (高级 Fake-IP + 负载均衡模板):"
     echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
     echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}[INFO] 管道 EOF 冲突已完美彻底解决，双端高级模板稳定运行！${NC}"
+    echo -e "${GREEN}[INFO] VLESS-REALITY 与 Hysteria 2 双端订阅均已就绪！${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
