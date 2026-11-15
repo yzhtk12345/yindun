@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY 与 Hysteria 2 服务端入站管理（Git 本地直接执行版）
+# Description: 支持 VLESS-REALITY、Hysteria 2 与 TUIC v5 服务端入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -60,7 +60,7 @@ get_available_port() {
             target_port="$manual_port"
         fi
 
-        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
+        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] \vert{}\vert{} [ "$target_port" -gt 65535 ]; then
             echo -e "${RED}[ERROR] 端口输入无效！${NC}" >&2
             return 1
         fi
@@ -105,7 +105,7 @@ cleanup_firewall_by_type() {
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q "TYPE=${target_type}|"; then
+            if echo "$line" \vert{} grep -q "TYPE=${target_type}|"; then
                 local old_p
                 old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
                 if [[ -n "$old_p" ]]; then
@@ -143,7 +143,7 @@ manage_firewall_port() {
     fw_type=$(detect_firewall)
 
     local protos=()
-    if [[ "$proto" == "tcp/udp" || "$proto" == "both" ]]; then
+    if [[ "$proto" == "tcp/udp" \vert{}\vert{} "$proto" == "both" ]]; then
         protos=("tcp" "udp")
     else
         protos=("$proto")
@@ -199,11 +199,11 @@ select_best_reality_domain() {
 
     for domain in "${REALITY_CANDIDATES[@]}"; do
         local time_cost
-        time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
+        time_cost=$(curl -o /dev/null -s -w "\%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 域名: ${domain} | 延迟: ${ms} ms" >&2
+            echo -e "  -> 域名: ${domain} \vert{} 延迟: ${ms} ms" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
@@ -265,7 +265,7 @@ add_vless_reality_server_config() {
     private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
     public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
 
-    if [[ -z "$private_key" || -z "$public_key" ]]; then
+    if [[ -z "$private_key" \vert{}\vert{} -z "$public_key" ]]; then
         echo -e "${RED}[ERROR] 密钥对生成失败！${NC}"
         return 1
     fi
@@ -278,9 +278,8 @@ add_vless_reality_server_config() {
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
     local node_name="vless-reality-vision-in-${host_name}"
-    local db_record="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
+    local db_record="TYPE=vless-reality|NAME=${node_name}\vert{}PORT=${port}|UUID=${uuid}\vert{}PRIV=${private_key}|PUB=${public_key}\vert{}SHORTID=${short_id}|DOMAIN=${server_name}\vert{}IP=${server_ip}"
 
-    # Python 安全写入：确保多协议独立区块并带有完美的空行
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id" << 'PY_EOF'
 import sys
 import os
@@ -289,7 +288,6 @@ import yaml
 config_path, nodes_db, node_name, port_str, db_record, uuid, server_name, priv, short_id = sys.argv[1:10]
 port = int(port_str)
 
-# 1. 更新总账本
 existing_records = []
 if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
@@ -301,7 +299,6 @@ existing_records.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f:
     f.write("\n".join(existing_records) + "\n")
 
-# 2. 读取现有配置并排除同名旧节点
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -329,7 +326,6 @@ new_listener = {
 }
 listeners.append(new_listener)
 
-# 3. 独立序列化并用双换行拼接空行
 blocks = []
 for item in listeners:
     dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
@@ -355,7 +351,7 @@ PY_EOF
 }
 
 # ------------------------------------------------------------------------------
-# Hysteria 2 (自签证书 + SHA-256 指纹 + ALPN h3) 服务端核心写入模块
+# Hysteria 2 服务端核心写入模块
 # ------------------------------------------------------------------------------
 add_hysteria2_server_config() {
     check_and_install_python
@@ -410,9 +406,8 @@ add_hysteria2_server_config() {
     manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
 
     local node_name="hysteria2-in-${host_name}"
-    local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
+    local db_record="TYPE=hysteria2|NAME=${node_name}\vert{}PORT=${port}|PASSWORD=${hy2_password}\vert{}FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}\vert{}IP=${server_ip}"
 
-    # Python 安全写入：确保多协议独立区块并带有完美的空行
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file" << 'PY_EOF'
 import sys
 import os
@@ -421,7 +416,6 @@ import yaml
 config_path, nodes_db, node_name, port_str, db_record, password, cert_file, key_file = sys.argv[1:9]
 port = int(port_str)
 
-# 1. 更新总账本
 existing_records = []
 if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
@@ -433,7 +427,6 @@ existing_records.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f:
     f.write("\n".join(existing_records) + "\n")
 
-# 2. 读取现有配置并排除同名旧节点
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -458,7 +451,6 @@ new_listener = {
 }
 listeners.append(new_listener)
 
-# 3. 独立序列化并用双换行拼接空行
 blocks = []
 for item in listeners:
     dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
@@ -484,6 +476,138 @@ PY_EOF
     echo -e "${GREEN}========================================================${NC}"
 }
 
+# ------------------------------------------------------------------------------
+# TUIC v5 服务端核心写入模块（已实现独立自签 SNI 隔离）
+# ------------------------------------------------------------------------------
+add_tuic_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    cleanup_firewall_by_type "tuic"
+
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}        开始配置并写入 TUIC v5 服务端入站             ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto"
+    local manual_port=""
+    if [[ "$port_mode_choice" == "2" ]]; then
+        port_mode="manual"
+        read -p "请输入要指定的 UDP 端口 [20000-60000]: " manual_port
+    fi
+
+    local port
+    port=$(get_available_port "$port_mode" "$manual_port")
+    if [[ -z "$port" ]]; then
+        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
+        return 1
+    fi
+
+    local tuic_uuid
+    tuic_uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    local tuic_password
+    tuic_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
+
+    local cert_dir="${CONFIG_DIR}/cert"
+    mkdir -p "$cert_dir"
+    local cert_file="${cert_dir}/tuic.crt"
+    local key_file="${cert_dir}/tuic.key"
+    
+    # TUIC v5 使用与 Hy2 不同的独立自签域名以实现隔离
+    local sni_domain="www.apple.com"
+
+    echo -e "${CYAN}[INFO] 正在为 TUIC v5 生成独立的自签 TLS 证书 (SNI: ${sni_domain})...${NC}"
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=${sni_domain}" 2>/dev/null
+
+    local sha256_fingerprint
+    sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+
+    if [[ -z "$sha256_fingerprint" ]]; then
+        echo -e "${RED}[ERROR] 证书 SHA-256 指纹计算失败！${NC}"
+        return 1
+    fi
+
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    manage_firewall_port "add" "$port" "udp" "YinDun-Tuic-${port}"
+
+    local node_name="tuic-in-${host_name}"
+    local db_record="TYPE=tuic|NAME=${node_name}|PORT=${port}|UUID=${tuic_uuid}|PASSWORD=${tuic_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$tuic_uuid" "$tuic_password" "$cert_file" "$key_file" "$sni_domain" << 'PY_EOF'
+import sys
+import os
+import yaml
+
+config_path, nodes_db, node_name, port_str, db_record, tuic_uuid, password, cert_file, key_file, sni_domain = sys.argv[1:11]
+port = int(port_str)
+
+existing_records = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("TYPE=tuic|"):
+                existing_records.append(line)
+existing_records.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f:
+    f.write("\n".join(existing_records) + "\n")
+
+listeners = []
+if os.path.exists(config_path):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except Exception:
+        pass
+
+new_listener = {
+    "name": node_name,
+    "type": "tuic",
+    "port": port,
+    "listen": "0.0.0.0",
+    "users": {
+        tuic_uuid: password
+    },
+    "congestion-controller": "bbr",
+    "alpn": ["h3"],
+    "certificate": cert_file,
+    "private-key": key_file
+}
+listeners.append(new_listener)
+
+blocks = []
+for item in listeners:
+    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
+    indented = "\n".join("  " + line for line in dumped.splitlines())
+    blocks.append(indented)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+
+    systemctl restart mihomo
+
+    echo -e "\n${GREEN}========================================================${NC}"
+    echo -e "${GREEN}  TUIC v5 服务端入站已成功写入并重启（已实现 SNI 隔离）！${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+    echo -e "入站标识   : ${YELLOW}${node_name}${NC}"
+    echo -e "监听端口   : ${YELLOW}${port} (UDP)${NC}"
+    echo -e "证书 SNI   : ${YELLOW}${sni_domain}${NC}"
+    echo -e "鉴权 UUID  : ${YELLOW}${tuic_uuid}${NC}"
+    echo -e "鉴权密码   : ${YELLOW}${tuic_password}${NC}"
+    echo -e "SHA-256指纹: ${YELLOW}${sha256_fingerprint}${NC}"
+    echo -e "数据留档   : ${CYAN}${NODES_DB}${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+}
+
 show_menu() {
     clear
     echo -e "${CYAN}========================================================${NC}"
@@ -491,9 +615,10 @@ show_menu() {
     echo -e "${CYAN}========================================================${NC}"
     echo "1. 添加 VLESS-REALITY 服务端节点"
     echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + SHA-256 指纹)"
+    echo "3. 添加 TUIC v5 服务端节点 (自签证书 + BBR + SNI 隔离)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-2]: " choice
+    read -p "请选择操作 [0-3]: " choice
 
     case "$choice" in
         1)
@@ -501,6 +626,9 @@ show_menu() {
             ;;
         2)
             add_hysteria2_server_config
+            ;;
+        3)
+            add_tuic_server_config
             ;;
         0)
             exit 0
@@ -511,6 +639,6 @@ show_menu() {
     esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     show_menu
 fi
