@@ -60,7 +60,7 @@ get_available_port() {
             target_port="$manual_port"
         fi
 
-        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] \vert{}\vert{} [ "$target_port" -gt 65535 ]; then
+        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
             echo -e "${RED}[ERROR] 端口输入无效！${NC}" >&2
             return 1
         fi
@@ -105,7 +105,7 @@ cleanup_firewall_by_type() {
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if echo "$line" \vert{} grep -q "TYPE=${target_type}|"; then
+            if echo "$line" | grep -q "TYPE=${target_type}|"; then
                 local old_p
                 old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
                 if [[ -n "$old_p" ]]; then
@@ -143,7 +143,7 @@ manage_firewall_port() {
     fw_type=$(detect_firewall)
 
     local protos=()
-    if [[ "$proto" == "tcp/udp" \vert{}\vert{} "$proto" == "both" ]]; then
+    if [[ "$proto" == "tcp/udp" || "$proto" == "both" ]]; then
         protos=("tcp" "udp")
     else
         protos=("$proto")
@@ -199,11 +199,11 @@ select_best_reality_domain() {
 
     for domain in "${REALITY_CANDIDATES[@]}"; do
         local time_cost
-        time_cost=$(curl -o /dev/null -s -w "\%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
+        time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 域名: ${domain} \vert{} 延迟: ${ms} ms" >&2
+            echo -e "  -> 域名: ${domain} | 延迟: ${ms} ms" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
@@ -265,7 +265,7 @@ add_vless_reality_server_config() {
     private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
     public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
 
-    if [[ -z "$private_key" \vert{}\vert{} -z "$public_key" ]]; then
+    if [[ -z "$private_key" || -z "$public_key" ]]; then
         echo -e "${RED}[ERROR] 密钥对生成失败！${NC}"
         return 1
     fi
@@ -278,7 +278,7 @@ add_vless_reality_server_config() {
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
     local node_name="vless-reality-vision-in-${host_name}"
-    local db_record="TYPE=vless-reality|NAME=${node_name}\vert{}PORT=${port}|UUID=${uuid}\vert{}PRIV=${private_key}|PUB=${public_key}\vert{}SHORTID=${short_id}|DOMAIN=${server_name}\vert{}IP=${server_ip}"
+    local db_record="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id" << 'PY_EOF'
 import sys
@@ -406,7 +406,7 @@ add_hysteria2_server_config() {
     manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
 
     local node_name="hysteria2-in-${host_name}"
-    local db_record="TYPE=hysteria2|NAME=${node_name}\vert{}PORT=${port}|PASSWORD=${hy2_password}\vert{}FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}\vert{}IP=${server_ip}"
+    local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file" << 'PY_EOF'
 import sys
@@ -639,6 +639,6 @@ show_menu() {
     esac
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     show_menu
 fi
