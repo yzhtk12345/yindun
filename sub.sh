@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已完美集成 TUIC v5 订阅解析）
+# Description: 本地订阅分发守护进程（已修复 Sing-box 与通用链接 TUIC 自签证书校验问题）
 # ==============================================================================
 
 RED="\033[31m"
@@ -149,7 +149,7 @@ stop_daemon() {
     fi
 }
 
-# 1. 编写独立的订阅文件生成脚本（支持 VLESS-REALITY、Hysteria 2、TUIC v5）
+# 1. 编写独立的订阅文件生成脚本
 prepare_subscription_generator() {
     cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
 import os
@@ -273,7 +273,7 @@ if os.path.exists(nodes_db):
                 hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
                 all_links.append(hy2_link)
 
-            # C. 解析 TUIC v5 节点
+            # C. 解析 TUIC v5 节点 (已修复自签证书校验)
             elif node_type == "tuic":
                 name = parts.get("NAME", "tuic-node").replace("-in-", "-out-")
                 ip = parts.get("IP", "127.0.0.1")
@@ -309,7 +309,7 @@ if os.path.exists(nodes_db):
                     "tls": {
                         "enabled": True,
                         "server_name": sni,
-                        "insecure": False,
+                        "insecure": True,  # 修复：允许自签证书不安全校验
                         "alpn": ["h3"]
                     },
                     "congestion_control": "bbr"
@@ -317,7 +317,7 @@ if os.path.exists(nodes_db):
                 box_outbounds.append(box_dict)
 
                 encoded_name = urllib.parse.quote(name)
-                tuic_link = f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}#{encoded_name}"
+                tuic_link = f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{encoded_name}"
                 all_links.append(tuic_link)
 
 proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
@@ -491,7 +491,7 @@ start_daemon() {
     web_port=$(get_web_port | grep -oE '[0-9]+' | tail -n 1)
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-    echo -e "${CYAN}[INFO] 正在生成双协议及多协议订阅文件...${NC}"
+    echo -e "${CYAN}[INFO] 正在重新生成多协议订阅文件...${NC}"
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
 
@@ -521,6 +521,6 @@ start_daemon() {
     echo -e "${CYAN}========================================================${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
