@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru 与 Snell 服务端入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru 与 Snell 原生入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -233,10 +233,7 @@ add_vless_reality_server_config() {
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto"
     local manual_port=""
-    if [[ "$port_mode_choice" == "2" ]]; then
-        port_mode="manual"
-        read -p "请输入要指定的端口 [20000-60000]: " manual_port
-    fi
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入要指定的端口 [20000-60000]: " manual_port
 
     local port
     port=$(get_available_port "$port_mode" "$manual_port")
@@ -306,8 +303,7 @@ add_hysteria2_server_config() {
     echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto"
-    local manual_port=""
+    local port_mode="auto" manual_port=""
     [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
 
     local port
