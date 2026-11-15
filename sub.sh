@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 支持 VLESS-REALITY 与 Hysteria 2（SHA-256 指纹校验）的双端动态订阅服务
+# Description: 启动即生成双协议订阅文件并托管 HTTP 服务的后台守护进程
 # ==============================================================================
 
 RED="\033[31m"
@@ -148,62 +148,52 @@ stop_daemon() {
     fi
 }
 
-# 独立生成 sub_server.py 脚本，完美支持多协议动态订阅解析
-prepare_python_server() {
-    export YD_PYTHON_SERVER_FILE="$PYTHON_SERVER_FILE"
+# 1. 核心订阅生成逻辑（在启动时直接执行，生成所有订阅文件）
+generate_subscription_files() {
     python3 -c '
 import os
-
-server_code = r"""import http.server
 import urllib.parse
-import sys
-import os
 import json
-import base64
 
-port = int(sys.argv[1])
-token = sys.argv[2]
-config_dir = sys.argv[3]
+config_dir = "/etc/yindun/mihomo"
 nodes_db = os.path.join(config_dir, "all_nodes.txt")
+all_links_path = os.path.join(config_dir, "all_links.txt")
+box_links_path = os.path.join(config_dir, "box_links.json")
+mi_links_path = os.path.join(config_dir, "mi_links.yaml")
 
-def generate_subscriptions():
-    all_links_path = os.path.join(config_dir, "all_links.txt")
-    box_links_path = os.path.join(config_dir, "box_links.json")
-    mi_links_path = os.path.join(config_dir, "mi_links.yaml")
+mi_proxies = []
+box_outbounds = []
+all_links = []
+node_names = []
 
-    mi_proxies = []
-    box_outbounds = []
-    all_links = []
-    node_names = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            
+            parts = {}
+            for item in line.split("|"):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    parts[k] = v
 
-    if os.path.exists(nodes_db):
-        with open(nodes_db, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                parts = {}
-                for item in line.split("|"):
-                    if "=" in item:
-                        k, v = item.split("=", 1)
-                        parts[k] = v
+            node_type = parts.get("TYPE")
 
-                node_type = parts.get("TYPE")
+            # A. 解析 VLESS-REALITY 节点
+            if node_type == "vless-reality":
+                name = parts.get("NAME", "node").replace("-in-", "-out-")
+                ip = parts.get("IP", "127.0.0.1")
+                port_val = parts.get("PORT", "443")
+                uuid = parts.get("UUID", "")
+                pub = parts.get("PUB", "")
+                shortid = parts.get("SHORTID", "")
+                domain = parts.get("DOMAIN", "gateway.icloud.com")
 
-                # 1. 解析 VLESS-REALITY 节点
-                if node_type == "vless-reality":
-                    name = parts.get("NAME", "node").replace("-in-", "-out-")
-                    ip = parts.get("IP", "127.0.0.1")
-                    port_val = parts.get("PORT", "443")
-                    uuid = parts.get("UUID", "")
-                    pub = parts.get("PUB", "")
-                    shortid = parts.get("SHORTID", "")
-                    domain = parts.get("DOMAIN", "gateway.icloud.com")
+                node_names.append(name)
 
-                    node_names.append(name)
-
-                    mi_proxy = f\"\"\"  - name: "{name}"
+                mi_proxy = f"""  - name: "{name}"
     type: vless
     server: {ip}
     port: {port_val}
@@ -217,48 +207,48 @@ def generate_subscriptions():
     reality-opts:
       public-key: {pub}
       short-id: {shortid}
-      support-x25519mlkem768: false\"\"\"
-                    mi_proxies.append(mi_proxy)
+      support-x25519mlkem768: false"""
+                mi_proxies.append(mi_proxy)
 
-                    box_dict = {
-                        "type": "vless",
-                        "tag": name,
-                        "server": ip,
-                        "server_port": int(port_val),
-                        "uuid": uuid,
-                        "flow": "xtls-rprx-vision",
-                        "tls": {
+                box_dict = {
+                    "type": "vless",
+                    "tag": name,
+                    "server": ip,
+                    "server_port": int(port_val),
+                    "uuid": uuid,
+                    "flow": "xtls-rprx-vision",
+                    "tls": {
+                        "enabled": True,
+                        "server_name": domain,
+                        "utls": {
                             "enabled": True,
-                            "server_name": domain,
-                            "utls": {
-                                "enabled": True,
-                                "fingerprint": "chrome"
-                            },
-                            "reality": {
-                                "enabled": True,
-                                "public_key": pub,
-                                "short_id": shortid
-                            }
+                            "fingerprint": "chrome"
+                        },
+                        "reality": {
+                            "enabled": True,
+                            "public_key": pub,
+                            "short_id": shortid
                         }
                     }
-                    box_outbounds.append(box_dict)
+                }
+                box_outbounds.append(box_dict)
 
-                    encoded_name = urllib.parse.quote(name)
-                    vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
-                    all_links.append(vless_link)
+                encoded_name = urllib.parse.quote(name)
+                vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
+                all_links.append(vless_link)
 
-                # 2. 解析 Hysteria 2 节点（支持自签证书 SHA-256 指纹校验）
-                elif node_type == "hysteria2":
-                    name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
-                    ip = parts.get("IP", "127.0.0.1")
-                    port_val = parts.get("PORT", "443")
-                    password = parts.get("PASSWORD", "")
-                    fingerprint = parts.get("FINGERPRINT", "")
-                    sni = parts.get("SNI", "gateway.icloud.com")
+            # B. 解析 Hysteria 2 节点（附带 SHA-256 指纹校验）
+            elif node_type == "hysteria2":
+                name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
+                ip = parts.get("IP", "127.0.0.1")
+                port_val = parts.get("PORT", "443")
+                password = parts.get("PASSWORD", "")
+                fingerprint = parts.get("FINGERPRINT", "")
+                sni = parts.get("SNI", "gateway.icloud.com")
 
-                    node_names.append(name)
+                node_names.append(name)
 
-                    mi_proxy = f\"\"\"  - name: "{name}"
+                mi_proxy = f"""  - name: "{name}"
     type: hysteria2
     server: {ip}
     port: {port_val}
@@ -267,31 +257,31 @@ def generate_subscriptions():
     skip-cert-verify: false
     fingerprint: {fingerprint}
     alpn:
-      - h3\"\"\"
-                    mi_proxies.append(mi_proxy)
+      - h3"""
+                mi_proxies.append(mi_proxy)
 
-                    box_dict = {
-                        "type": "hysteria2",
-                        "tag": name,
-                        "server": ip,
-                        "server_port": int(port_val),
-                        "password": password,
-                        "tls": {
-                            "enabled": True,
-                            "server_name": sni,
-                            "insecure": True,
-                            "alpn": ["h3"]
-                        }
+                box_dict = {
+                    "type": "hysteria2",
+                    "tag": name,
+                    "server": ip,
+                    "server_port": int(port_val),
+                    "password": password,
+                    "tls": {
+                        "enabled": True,
+                        "server_name": sni,
+                        "insecure": True,
+                        "alpn": ["h3"]
                     }
-                    box_outbounds.append(box_dict)
+                }
+                box_outbounds.append(box_dict)
 
-                    encoded_name = urllib.parse.quote(name)
-                    hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
-                    all_links.append(hy2_link)
+                encoded_name = urllib.parse.quote(name)
+                hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
+                all_links.append(hy2_link)
 
-    proxies_list_6 = "\n".join([f\x27      - "{n}"\x27 for n in node_names]) if node_names else \x27      - "DIRECT"\x27
+proxies_list_6 = "\n".join([f"      - \"{n}\"" for n in node_names]) if node_names else "      - \"DIRECT\""
 
-    mihomo_full_config = f\"\"\"port: 7890
+mihomo_full_config = f"""port: 7890
 allow-lan: true
 mode: rule
 log-level: info
@@ -328,7 +318,7 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-\"\"\" + ("\n\n".join(mi_proxies) if mi_proxies else "") + f\"\"\"
+""" + ("\n\n".join(mi_proxies) if mi_proxies else "") + f"""
 
 proxy-groups:
   - name: 负载均衡
@@ -360,227 +350,152 @@ rules:
   - GEOSITE,CN,DIRECT
   - GEOIP,CN,DIRECT
   - MATCH,🌍选择代理节点
-\"\"\"
-    with open(mi_links_path, "w", encoding="utf-8") as f:
-        f.write(mihomo_full_config)
+"""
 
-    selector_outbounds = ["auto"] + node_names if node_names else ["direct"]
-    auto_outbounds = node_names if node_names else ["direct"]
+with open(mi_links_path, "w", encoding="utf-8") as f:
+    f.write(mihomo_full_config)
 
-    singbox_full_config = {
-        "log": {
-            "level": "info",
-            "timestamp": True
-        },
-        "http_clients": [
-            {
-                "tag": "rule-set-direct"
-            }
+selector_outbounds = ["auto"] + node_names if node_names else ["direct"]
+auto_outbounds = node_names if node_names else ["direct"]
+
+singbox_full_config = {
+    "log": {"level": "info", "timestamp": True},
+    "http_clients": [{"tag": "rule-set-direct"}],
+    "dns": {
+        "servers": [
+            {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
+            {"type": "udp", "tag": "dns-cn", "server": "223.5.5.5", "server_port": 53},
+            {"type": "https", "tag": "dns-proxy", "server": "dns.google", "domain_resolver": "dns-cn", "detour": "proxy"}
         ],
-        "dns": {
-            "servers": [
-                {
-                    "type": "fakeip",
-                    "tag": "fakeip",
-                    "inet4_range": "198.18.0.0/15",
-                    "inet6_range": "fc00::/18"
-                },
-                {
-                    "type": "udp",
-                    "tag": "dns-cn",
-                    "server": "223.5.5.5",
-                    "server_port": 53
-                },
-                {
-                    "type": "https",
-                    "tag": "dns-proxy",
-                    "server": "dns.google",
-                    "domain_resolver": "dns-cn",
-                    "detour": "proxy"
-                }
-            ],
-            "rules": [
-                {
-                    "rule_set": ["geosite-cn"],
-                    "action": "route",
-                    "server": "dns-cn"
-                },
-                {
-                    "query_type": ["A", "AAAA"],
-                    "action": "route",
-                    "server": "fakeip"
-                }
-            ],
-            "final": "dns-proxy",
-            "strategy": "prefer_ipv4",
-            "cache_capacity": 8192,
-            "optimistic": {
-                "enabled": True,
-                "timeout": "1h"
-            },
-            "timeout": "10s",
-            "reverse_mapping": True
-        },
-        "inbounds": [
-            {
-                "type": "tun",
-                "tag": "tun-in",
-                "address": [
-                    "172.19.0.1/30",
-                    "fdfe:dcba:9876::1/126"
-                ],
-                "auto_route": True,
-                "strict_route": True,
-                "mtu": 1420
-            }
+        "rules": [
+            {"rule_set": ["geosite-cn"], "action": "route", "server": "dns-cn"},
+            {"query_type": ["A", "AAAA"], "action": "route", "server": "fakeip"}
         ],
-        "outbounds": [
-            {
-                "type": "selector",
-                "tag": "proxy",
-                "default": "auto",
-                "outbounds": selector_outbounds
-            },
-            {
-                "type": "urltest",
-                "tag": "auto",
-                "outbounds": auto_outbounds,
-                "url": "https://www.gstatic.com/generate_204",
-                "interval": "10m",
-                "tolerance": 30,
-                "idle_timeout": "30m"
-            },
-            {
-                "type": "direct",
-                "tag": "direct"
-            }
-        ] + box_outbounds,
-        "route": {
-            "default_http_client": "rule-set-direct",
-            "default_domain_resolver": "dns-cn",
-            "auto_detect_interface": True,
-            "rule_set": [
-                {
-                    "tag": "geosite-cn",
-                    "type": "remote",
-                    "format": "binary",
-                    "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs"
-                },
-                {
-                    "tag": "geoip-cn",
-                    "type": "remote",
-                    "format": "binary",
-                    "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs"
-                }
-            ],
-            "rules": [
-                {
-                    "inbound": ["tun-in"],
-                    "protocol": ["dns"],
-                    "action": "hijack-dns"
-                },
-                {
-                    "clash_mode": "Global",
-                    "action": "route",
-                    "outbound": "proxy"
-                },
-                {
-                    "ip_is_private": True,
-                    "action": "route",
-                    "outbound": "direct"
-                },
-                {
-                    "rule_set": ["geosite-cn"],
-                    "action": "route",
-                    "outbound": "direct"
-                },
-                {
-                    "rule_set": ["geoip-cn"],
-                    "action": "route",
-                    "outbound": "direct"
-                },
-                {
-                    "clash_mode": "Direct",
-                    "action": "route",
-                    "outbound": "direct"
-                },
-                {
-                    "network": ["tcp", "udp"],
-                    "port": 853,
-                    "action": "reject"
-                }
-            ],
-            "final": "proxy"
-        },
-        "experimental": {
-            "cache_file": {
-                "enabled": True,
-                "store_dns": True
-            },
-            "clash_api": {
-                "external_controller": "127.0.0.1:9090",
-                "external_ui": "ui",
-                "default_mode": "Rule"
-            }
+        "final": "dns-proxy",
+        "strategy": "prefer_ipv4",
+        "cache_capacity": 8192,
+        "optimistic": {"enabled": True, "timeout": "1h"},
+        "timeout": "10s",
+        "reverse_mapping": True
+    },
+    "inbounds": [
+        {
+            "type": "tun",
+            "tag": "tun-in",
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "auto_route": True,
+            "strict_route": True,
+            "mtu": 1420
         }
+    ],
+    "outbounds": [
+        {"type": "selector", "tag": "proxy", "default": "auto", "outbounds": selector_outbounds},
+        {"type": "urltest", "tag": "auto", "outbounds": auto_outbounds, "url": "https://www.gstatic.com/generate_204", "interval": "10m", "tolerance": 30, "idle_timeout": "30m"},
+        {"type": "direct", "tag": "direct"}
+    ] + box_outbounds,
+    "route": {
+        "default_http_client": "rule-set-direct",
+        "default_domain_resolver": "dns-cn",
+        "auto_detect_interface": True,
+        "rule_set": [
+            {"tag": "geosite-cn", "type": "remote", "format": "binary", "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs"},
+            {"tag": "geoip-cn", "type": "remote", "format": "binary", "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs"}
+        ],
+        "rules": [
+            {"inbound": ["tun-in"], "protocol": ["dns"], "action": "hijack-dns"},
+            {"clash_mode": "Global", "action": "route", "outbound": "proxy"},
+            {"ip_is_private": True, "action": "route", "outbound": "direct"},
+            {"rule_set": ["geosite-cn"], "action": "route", "outbound": "direct"},
+            {"rule_set": ["geoip-cn"], "action": "route", "outbound": "direct"},
+            {"clash_mode": "Direct", "action": "route", "outbound": "direct"},
+            {"network": ["tcp", "udp"], "port": 853, "action": "reject"}
+        ],
+        "final": "proxy"
+    },
+    "experimental": {
+        "cache_file": {"enabled": True, "store_dns": True},
+        "clash_api": {"external_controller": "127.0.0.1:9090", "external_ui": "ui", "default_mode": "Rule"}
     }
+}
 
-    with open(box_links_path, "w", encoding="utf-8") as f:
-        json.dump(singbox_full_config, f, indent=2, ensure_ascii=False)
+with open(box_links_path, "w", encoding="utf-8") as f:
+    json.dump(singbox_full_config, f, indent=2, ensure_ascii=False)
 
-    with open(all_links_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(all_links) + "\n")
+with open(all_links_path, "w", encoding="utf-8") as f:
+    f.write("\n".join(all_links) + "\n")
+print("[INFO] 所有双端订阅文件已成功生成！")
+'
+}
 
-generate_subscriptions()
+# 2. 独立生成纯净的 sub_server.py（仅用于快速响应 HTTP 请求，直接读取已生成的文件）
+prepare_python_server() {
+    export YD_PYTHON_SERVER_FILE="$PYTHON_SERVER_FILE"
+    python3 -c '
+import os
+
+server_code = r"""import http.server
+import urllib.parse
+import sys
+import os
+import base64
+
+port = int(sys.argv[1])
+token = sys.argv[2]
+config_dir = sys.argv[3]
 
 class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed_path.query)
-        user_token = query_params.get(\x27token\x27, [\x27\x27])[0]
+        user_token = query_params.get("token", [""])[0]
 
         if user_token != token:
             self.send_response(403)
             self.end_headers()
-            self.wfile.write(b\x27Access Denied: Invalid or Missing Token\x27)
+            self.wfile.write(b"Access Denied: Invalid or Missing Token")
             return
 
-        generate_subscriptions()
-
-        if parsed_path.path in [\x27/\x27, \x27/all\x27]:
+        if parsed_path.path in ["/", "/all"]:
             self.send_response(200)
-            self.send_header(\x27Content-Type\x27, \x27text/plain; charset=utf-8\x27)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            with open(os.path.join(config_dir, \x27all_links.txt\x27), \x27rb\x27) as f:
-                raw_data = f.read()
-                self.wfile.write(base64.b64encode(raw_data))
-        elif parsed_path.path == \x27/raw\x27:
+            file_path = os.path.join(config_dir, "all_links.txt")
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    self.wfile.write(base64.b64encode(f.read()))
+        elif parsed_path.path == "/raw":
             self.send_response(200)
-            self.send_header(\x27Content-Type\x27, \x27text/plain; charset=utf-8\x27)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            with open(os.path.join(config_dir, \x27all_links.txt\x27), \x27rb\x27) as f:
-                self.wfile.write(f.read())
-        elif parsed_path.path == \x27/box\x27:
+            file_path = os.path.join(config_dir, "all_links.txt")
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    self.wfile.write(f.read())
+        elif parsed_path.path == "/box":
             self.send_response(200)
-            self.send_header(\x27Content-Type\x27, \x27application/json; charset=utf-8\x27)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            with open(os.path.join(config_dir, \x27box_links.json\x27), \x27rb\x27) as f:
-                self.wfile.write(f.read())
-        elif parsed_path.path == \x27/mi\x27:
+            file_path = os.path.join(config_dir, "box_links.json")
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    self.wfile.write(f.read())
+        elif parsed_path.path == "/mi":
             self.send_response(200)
-            self.send_header(\x27Content-Type\x27, \x27text/yaml; charset=utf-8\x27)
+            self.send_header("Content-Type", "text/yaml; charset=utf-8")
             self.end_headers()
-            with open(os.path.join(config_dir, \x27mi_links.yaml\x27), \x27rb\x27) as f:
-                self.wfile.write(f.read())
+            file_path = os.path.join(config_dir, "mi_links.yaml")
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    self.wfile.write(f.read())
         else:
             self.send_response(404)
             self.end_headers()
-            self.wfile.write(b\x27Not Found\x27)
+            self.wfile.write(b"Not Found")
 
     def log_message(self, format, *args):
         pass
 
-server = http.server.HTTPServer((\x270.0.0.0\x27, port), MultiSubHandler)
+server = http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler)
 server.serve_forever()
 """
 
@@ -609,10 +524,10 @@ start_daemon() {
     local web_port
     web_port=$(echo "$raw_port" | grep -oE '[0-9]+' | tail -n 1)
 
-    if [ ! -f "$TOKEN_FILE" ]; then
-        openssl rand -hex 32 > "$TOKEN_FILE"
-    fi
     SUB_TOKEN=$(cat "$TOKEN_FILE")
+
+    echo -e "${CYAN}[INFO] 正在解析账本并生成客户端订阅文件...${NC}"
+    generate_subscription_files
 
     prepare_python_server
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
@@ -644,6 +559,6 @@ start_daemon() {
     echo -e "${GREEN}[INFO] VLESS-REALITY 与 Hysteria 2 双端订阅均已就绪！${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
