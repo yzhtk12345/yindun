@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY 与 Hysteria 2 服务端入站管理（净化无转义符号版）
+# Description: 纯 Bash + 独立 Python 脚本生成器，彻底根除远程管道 EOF 冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -13,6 +13,7 @@ NC="\033[0m"
 CONFIG_DIR="/etc/yindun/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
+PY_WRITER="${CONFIG_DIR}/update_yaml.py"
 
 mkdir -p "${CONFIG_DIR}"
 
@@ -100,7 +101,7 @@ cleanup_firewall_by_type() {
     local target_type="$1"
     local fw_type
     fw_type=$(detect_firewall)
-    echo -e "${CYAN}[INFO] 正在清理防火墙中的旧 ${target_type} 端口规则（已自动保护 SSH）...${NC}"
+    echo -e "${CYAN}[INFO] 正在清理防火墙中的旧 ${target_type} 端口规则...${NC}"
 
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
@@ -113,17 +114,14 @@ cleanup_firewall_by_type() {
                         ufw)
                             ufw delete allow "${old_p}/tcp" >/dev/null 2>&1
                             ufw delete allow "${old_p}/udp" >/dev/null 2>&1
-                            echo -e "${YELLOW}[UFW] 已移除旧 ${target_type} 端口: ${old_p}${NC}"
                             ;;
                         firewalld)
                             firewall-cmd --permanent --remove-port="${old_p}/tcp" >/dev/null 2>&1
                             firewall-cmd --permanent --remove-port="${old_p}/udp" >/dev/null 2>&1
-                            echo -e "${YELLOW}[Firewalld] 已移除旧 ${target_type} 端口: ${old_p}${NC}"
                             ;;
                         iptables)
                             iptables -D INPUT -p tcp --dport "$old_p" -j ACCEPT 2>/dev/null || true
                             iptables -D INPUT -p udp --dport "$old_p" -j ACCEPT 2>/dev/null || true
-                            echo -e "${YELLOW}[Iptables] 已移除旧 ${target_type} 端口: ${old_p}${NC}"
                             ;;
                     esac
                 fi
@@ -222,18 +220,21 @@ select_best_reality_domain() {
     echo -n "$best_domain"
 }
 
-update_server_yaml_and_db() {
-    export YD_CONFIG_FILE="$CONFIG_FILE"
-    export YD_NODES_DB="$NODES_DB"
-    python3 -c '
-import os, yaml
+# 生成纯净的本地 Python 辅助脚本，彻底根除 Bash 管道解析错误
+prepare_yaml_writer() {
+    cat << 'EOF' > "$PY_WRITER"
+import os
+import sys
+import yaml
 
-config_path = os.environ["YD_CONFIG_FILE"]
-nodes_db = os.environ["YD_NODES_DB"]
-proto_type = os.environ["YD_PROTO_TYPE"]
-node_name = os.environ["YD_NODE_NAME"]
-db_record = os.environ["YD_DB_RECORD"]
+config_path = sys.argv[1]
+nodes_db = sys.argv[2]
+proto_type = sys.argv[3]
+node_name = sys.argv[4]
+port = int(sys.argv[5])
+db_record = sys.argv[6]
 
+# 1. 更新总账本
 existing_records = []
 if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
@@ -245,6 +246,7 @@ existing_records.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f:
     f.write("\n".join(existing_records) + "\n")
 
+# 2. 读取现有 config.yaml 的 listeners 并排除同名旧节点
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -255,47 +257,50 @@ if os.path.exists(config_path):
     except Exception:
         pass
 
+# 3. 构造当前新节点配置
 if proto_type == "vless-reality":
     new_listener = {
         "name": node_name,
         "type": "vless",
-        "port": int(os.environ["YD_PORT"]),
+        "port": port,
         "listen": "0.0.0.0",
         "users": [
-            {"username": "1", "uuid": os.environ["YD_UUID"], "flow": "xtls-rprx-vision"}
+            {"username": "1", "uuid": sys.argv[7], "flow": "xtls-rprx-vision"}
         ],
         "reality-config": {
-            "dest": f"{os.environ[\"YD_DOMAIN\"]}:443",
-            "private-key": os.environ["YD_PRIV"],
-            "short-id": [os.environ["YD_SHORTID"]],
-            "server-names": [os.environ["YD_DOMAIN"]]
+            "dest": f"{sys.argv[8]}:443",
+            "private-key": sys.argv[9],
+            "short-id": [sys.argv[10]],
+            "server-names": [sys.argv[8]]
         }
     }
 elif proto_type == "hysteria2":
     new_listener = {
         "name": node_name,
         "type": "hysteria2",
-        "port": int(os.environ["YD_PORT"]),
+        "port": port,
         "listen": "0.0.0.0",
         "users": {
-            "1": os.environ["YD_PASSWORD"]
+            "1": sys.argv[7]
         },
         "alpn": ["h3"],
-        "certificate": os.environ["YD_CERT"],
-        "private-key": os.environ["YD_KEY"]
+        "certificate": sys.argv[8],
+        "private-key": sys.argv[9]
     }
 
 listeners.append(new_listener)
 
+# 4. 独立序列化每个 listener，并通过双换行完美空行拼接
 blocks = []
 for item in listeners:
     dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
     indented = "\n".join("  " + line for line in dumped.splitlines())
     blocks.append(indented)
 
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f:
     f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-'
+EOF
 }
 
 add_vless_reality_server_config() {
@@ -354,17 +359,10 @@ add_vless_reality_server_config() {
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
 
     local node_name="vless-reality-vision-in-${host_name}"
+    local db_record="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
 
-    export YD_PROTO_TYPE="vless-reality"
-    export YD_NODE_NAME="$node_name"
-    export YD_PORT="$port"
-    export YD_UUID="$uuid"
-    export YD_PRIV="$private_key"
-    export YD_SHORTID="$short_id"
-    export YD_DOMAIN="$server_name"
-    export YD_DB_RECORD="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
-
-    update_server_yaml_and_db
+    prepare_yaml_writer
+    python3 "$PY_WRITER" "$CONFIG_FILE" "$NODES_DB" "vless-reality" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id"
 
     systemctl restart mihomo
 
@@ -432,16 +430,10 @@ add_hysteria2_server_config() {
     manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
 
     local node_name="hysteria2-in-${host_name}"
+    local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
-    export YD_PROTO_TYPE="hysteria2"
-    export YD_NODE_NAME="$node_name"
-    export YD_PORT="$port"
-    export YD_PASSWORD="$hy2_password"
-    export YD_CERT="$cert_file"
-    export YD_KEY="$key_file"
-    export YD_DB_RECORD="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
-
-    update_server_yaml_and_db
+    prepare_yaml_writer
+    python3 "$PY_WRITER" "$CONFIG_FILE" "$NODES_DB" "hysteria2" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file"
 
     systemctl restart mihomo
 
