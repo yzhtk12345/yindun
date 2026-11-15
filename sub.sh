@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已修复 Sing-box 与通用链接 TUIC 自签证书校验问题）
+# Description: 本地订阅分发守护进程（已修复语法错误与 TUIC 订阅解析）
 # ==============================================================================
 
 RED="\033[31m"
@@ -273,7 +273,7 @@ if os.path.exists(nodes_db):
                 hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
                 all_links.append(hy2_link)
 
-            # C. 解析 TUIC v5 节点 (已修复自签证书校验)
+            # C. 解析 TUIC v5 节点
             elif node_type == "tuic":
                 name = parts.get("NAME", "tuic-node").replace("-in-", "-out-")
                 ip = parts.get("IP", "127.0.0.1")
@@ -309,7 +309,7 @@ if os.path.exists(nodes_db):
                     "tls": {
                         "enabled": True,
                         "server_name": sni,
-                        "insecure": True,  # 修复：允许自签证书不安全校验
+                        "insecure": True,
                         "alpn": ["h3"]
                     },
                     "congestion_control": "bbr"
@@ -491,7 +491,7 @@ start_daemon() {
     web_port=$(get_web_port | grep -oE '[0-9]+' | tail -n 1)
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-    echo -e "${CYAN}[INFO] 正在重新生成多协议订阅文件...${NC}"
+    echo -e "${CYAN}[INFO] 正在生成多协议订阅文件...${NC}"
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
 
@@ -521,6 +521,6 @@ start_daemon() {
     echo -e "${CYAN}========================================================${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
