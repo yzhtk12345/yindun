@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 启动即生成双协议订阅文件并托管 HTTP 服务的后台守护进程
+# Description: 采用独立 Python 生成器架构，彻底根除远程管道 EOF 冲突
 # ==============================================================================
 
 RED="\033[31m"
@@ -15,6 +15,7 @@ NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
 PID_FILE="${CONFIG_DIR}/sub_server.pid"
 PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
+SUBSCRIPTION_GENERATOR="${CONFIG_DIR}/generate_sub.py"
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 
 mkdir -p "$CONFIG_DIR"
@@ -148,14 +149,14 @@ stop_daemon() {
     fi
 }
 
-# 1. 核心订阅生成逻辑（在启动时直接执行，生成所有订阅文件）
-generate_subscription_files() {
-    python3 -c '
+# 1. 独立生成订阅文件解析器 (generate_sub.py)，彻底杜绝管道引号转义问题
+prepare_subscription_generator() {
+    cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
 import os
 import urllib.parse
 import json
 
-config_dir = "/etc/yindun/mihomo"
+config_dir = os.path.dirname(os.path.abspath(__file__))
 nodes_db = os.path.join(config_dir, "all_nodes.txt")
 all_links_path = os.path.join(config_dir, "all_links.txt")
 box_links_path = os.path.join(config_dir, "box_links.json")
@@ -279,7 +280,7 @@ if os.path.exists(nodes_db):
                 hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
                 all_links.append(hy2_link)
 
-proxies_list_6 = "\n".join([f"      - \"{n}\"" for n in node_names]) if node_names else "      - \"DIRECT\""
+proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
 
 mihomo_full_config = f"""port: 7890
 allow-lan: true
@@ -423,17 +424,13 @@ with open(box_links_path, "w", encoding="utf-8") as f:
 
 with open(all_links_path, "w", encoding="utf-8") as f:
     f.write("\n".join(all_links) + "\n")
-print("[INFO] 所有双端订阅文件已成功生成！")
-'
+EOF
 }
 
-# 2. 独立生成纯净的 sub_server.py（仅用于快速响应 HTTP 请求，直接读取已生成的文件）
+# 2. 独立生成 sub_server.py 脚本文件
 prepare_python_server() {
-    export YD_PYTHON_SERVER_FILE="$PYTHON_SERVER_FILE"
-    python3 -c '
-import os
-
-server_code = r"""import http.server
+    cat << 'EOF' > "$PYTHON_SERVER_FILE"
+import http.server
 import urllib.parse
 import sys
 import os
@@ -497,13 +494,7 @@ class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
 
 server = http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler)
 server.serve_forever()
-"""
-
-target_file = os.environ["YD_PYTHON_SERVER_FILE"]
-os.makedirs(os.path.dirname(target_file), exist_ok=True)
-with open(target_file, "w", encoding="utf-8") as f:
-    f.write(server_code)
-'
+EOF
 }
 
 start_daemon() {
@@ -526,8 +517,9 @@ start_daemon() {
 
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-    echo -e "${CYAN}[INFO] 正在解析账本并生成客户端订阅文件...${NC}"
-    generate_subscription_files
+    echo -e "${CYAN}[INFO] 正在生成并刷新客户端订阅文件...${NC}"
+    prepare_subscription_generator
+    python3 "$SUBSCRIPTION_GENERATOR"
 
     prepare_python_server
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
