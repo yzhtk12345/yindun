@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 纯 Bash + 独立 Python 脚本生成器，彻底根除远程管道 EOF 冲突
+# Description: 支持 VLESS-REALITY 与 Hysteria 2 服务端入站管理（Git 本地直接执行版）
 # ==============================================================================
 
 RED="\033[31m"
@@ -13,7 +13,6 @@ NC="\033[0m"
 CONFIG_DIR="/etc/yindun/mihomo"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
-PY_WRITER="${CONFIG_DIR}/update_yaml.py"
 
 mkdir -p "${CONFIG_DIR}"
 
@@ -220,89 +219,9 @@ select_best_reality_domain() {
     echo -n "$best_domain"
 }
 
-# 生成纯净的本地 Python 辅助脚本，彻底根除 Bash 管道解析错误
-prepare_yaml_writer() {
-    cat << 'EOF' > "$PY_WRITER"
-import os
-import sys
-import yaml
-
-config_path = sys.argv[1]
-nodes_db = sys.argv[2]
-proto_type = sys.argv[3]
-node_name = sys.argv[4]
-port = int(sys.argv[5])
-db_record = sys.argv[6]
-
-# 1. 更新总账本
-existing_records = []
-if os.path.exists(nodes_db):
-    with open(nodes_db, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith(f"TYPE={proto_type}|"):
-                existing_records.append(line)
-existing_records.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing_records) + "\n")
-
-# 2. 读取现有 config.yaml 的 listeners 并排除同名旧节点
-listeners = []
-if os.path.exists(config_path):
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except Exception:
-        pass
-
-# 3. 构造当前新节点配置
-if proto_type == "vless-reality":
-    new_listener = {
-        "name": node_name,
-        "type": "vless",
-        "port": port,
-        "listen": "0.0.0.0",
-        "users": [
-            {"username": "1", "uuid": sys.argv[7], "flow": "xtls-rprx-vision"}
-        ],
-        "reality-config": {
-            "dest": f"{sys.argv[8]}:443",
-            "private-key": sys.argv[9],
-            "short-id": [sys.argv[10]],
-            "server-names": [sys.argv[8]]
-        }
-    }
-elif proto_type == "hysteria2":
-    new_listener = {
-        "name": node_name,
-        "type": "hysteria2",
-        "port": port,
-        "listen": "0.0.0.0",
-        "users": {
-            "1": sys.argv[7]
-        },
-        "alpn": ["h3"],
-        "certificate": sys.argv[8],
-        "private-key": sys.argv[9]
-    }
-
-listeners.append(new_listener)
-
-# 4. 独立序列化每个 listener，并通过双换行完美空行拼接
-blocks = []
-for item in listeners:
-    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
-    indented = "\n".join("  " + line for line in dumped.splitlines())
-    blocks.append(indented)
-
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f:
-    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-EOF
-}
-
+# ------------------------------------------------------------------------------
+# VLESS-REALITY 服务端核心写入模块
+# ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
     check_and_install_python
     cleanup_firewall_by_type "vless-reality"
@@ -361,8 +280,66 @@ add_vless_reality_server_config() {
     local node_name="vless-reality-vision-in-${host_name}"
     local db_record="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
 
-    prepare_yaml_writer
-    python3 "$PY_WRITER" "$CONFIG_FILE" "$NODES_DB" "vless-reality" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id"
+    # Python 安全写入：确保多协议独立区块并带有完美的空行
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id" << 'PY_EOF'
+import sys
+import os
+import yaml
+
+config_path, nodes_db, node_name, port_str, db_record, uuid, server_name, priv, short_id = sys.argv[1:10]
+port = int(port_str)
+
+# 1. 更新总账本
+existing_records = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("TYPE=vless-reality|"):
+                existing_records.append(line)
+existing_records.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f:
+    f.write("\n".join(existing_records) + "\n")
+
+# 2. 读取现有配置并排除同名旧节点
+listeners = []
+if os.path.exists(config_path):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except Exception:
+        pass
+
+new_listener = {
+    "name": node_name,
+    "type": "vless",
+    "port": port,
+    "listen": "0.0.0.0",
+    "users": [
+        {"username": "1", "uuid": uuid, "flow": "xtls-rprx-vision"}
+    ],
+    "reality-config": {
+        "dest": f"{server_name}:443",
+        "private-key": priv,
+        "short-id": [short_id],
+        "server-names": [server_name]
+    }
+}
+listeners.append(new_listener)
+
+# 3. 独立序列化并用双换行拼接空行
+blocks = []
+for item in listeners:
+    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
+    indented = "\n".join("  " + line for line in dumped.splitlines())
+    blocks.append(indented)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
 
     systemctl restart mihomo
 
@@ -377,6 +354,9 @@ add_vless_reality_server_config() {
     echo -e "${GREEN}========================================================${NC}"
 }
 
+# ------------------------------------------------------------------------------
+# Hysteria 2 (自签证书 + SHA-256 指纹 + ALPN h3) 服务端核心写入模块
+# ------------------------------------------------------------------------------
 add_hysteria2_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -432,8 +412,63 @@ add_hysteria2_server_config() {
     local node_name="hysteria2-in-${host_name}"
     local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
-    prepare_yaml_writer
-    python3 "$PY_WRITER" "$CONFIG_FILE" "$NODES_DB" "hysteria2" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file"
+    # Python 安全写入：确保多协议独立区块并带有完美的空行
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file" << 'PY_EOF'
+import sys
+import os
+import yaml
+
+config_path, nodes_db, node_name, port_str, db_record, password, cert_file, key_file = sys.argv[1:9]
+port = int(port_str)
+
+# 1. 更新总账本
+existing_records = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("TYPE=hysteria2|"):
+                existing_records.append(line)
+existing_records.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f:
+    f.write("\n".join(existing_records) + "\n")
+
+# 2. 读取现有配置并排除同名旧节点
+listeners = []
+if os.path.exists(config_path):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except Exception:
+        pass
+
+new_listener = {
+    "name": node_name,
+    "type": "hysteria2",
+    "port": port,
+    "listen": "0.0.0.0",
+    "users": {
+        "1": password
+    },
+    "alpn": ["h3"],
+    "certificate": cert_file,
+    "private-key": key_file
+}
+listeners.append(new_listener)
+
+# 3. 独立序列化并用双换行拼接空行
+blocks = []
+for item in listeners:
+    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
+    indented = "\n".join("  " + line for line in dumped.splitlines())
+    blocks.append(indented)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
 
     systemctl restart mihomo
 
@@ -476,6 +511,6 @@ show_menu() {
     esac
 }
 
-if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     show_menu
 fi
