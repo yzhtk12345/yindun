@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2 与 TUIC v5 服务端入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5 与 Mieru 服务端入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -220,7 +220,7 @@ select_best_reality_domain() {
 }
 
 # ------------------------------------------------------------------------------
-# VLESS-REALITY 服务端核心写入模块
+# 1. VLESS-REALITY 服务端核心写入模块
 # ------------------------------------------------------------------------------
 add_vless_reality_server_config() {
     check_and_install_python
@@ -351,7 +351,7 @@ PY_EOF
 }
 
 # ------------------------------------------------------------------------------
-# Hysteria 2 服务端核心写入模块
+# 2. Hysteria 2 服务端核心写入模块
 # ------------------------------------------------------------------------------
 add_hysteria2_server_config() {
     check_and_install_python
@@ -477,7 +477,7 @@ PY_EOF
 }
 
 # ------------------------------------------------------------------------------
-# TUIC v5 服务端核心写入模块（已实现独立自签 SNI 隔离）
+# 3. TUIC v5 服务端核心写入模块
 # ------------------------------------------------------------------------------
 add_tuic_server_config() {
     check_and_install_python
@@ -515,8 +515,6 @@ add_tuic_server_config() {
     mkdir -p "$cert_dir"
     local cert_file="${cert_dir}/tuic.crt"
     local key_file="${cert_dir}/tuic.key"
-    
-    # TUIC v5 使用与 Hy2 不同的独立自签域名以实现隔离
     local sni_domain="www.apple.com"
 
     echo -e "${CYAN}[INFO] 正在为 TUIC v5 生成独立的自签 TLS 证书 (SNI: ${sni_domain})...${NC}"
@@ -596,15 +594,149 @@ PY_EOF
     systemctl restart mihomo
 
     echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  TUIC v5 服务端入站已成功写入并重启（已实现 SNI 隔离）！${NC}"
+    echo -e "${GREEN}  TUIC v5 服务端入站已成功写入并重启！${NC}"
     echo -e "${GREEN}========================================================${NC}"
     echo -e "入站标识   : ${YELLOW}${node_name}${NC}"
     echo -e "监听端口   : ${YELLOW}${port} (UDP)${NC}"
-    echo -e "证书 SNI   : ${YELLOW}${sni_domain}${NC}"
     echo -e "鉴权 UUID  : ${YELLOW}${tuic_uuid}${NC}"
     echo -e "鉴权密码   : ${YELLOW}${tuic_password}${NC}"
     echo -e "SHA-256指纹: ${YELLOW}${sha256_fingerprint}${NC}"
-    echo -e "数据留档   : ${CYAN}${NODES_DB}${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+}
+
+# ------------------------------------------------------------------------------
+# 4. Mieru (TCP & UDP) 服务端核心写入模块
+# ------------------------------------------------------------------------------
+add_mieru_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    
+    cleanup_firewall_by_type "mieru-tcp"
+    cleanup_firewall_by_type "mieru-udp"
+
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}        开始配置并写入 Mieru (TCP & UDP) 服务端入站     ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto"
+    local manual_tcp_port=""
+    local manual_udp_port=""
+    
+    if [[ "$port_mode_choice" == "2" ]]; then
+        port_mode="manual"
+        read -p "请输入 Mieru TCP 节点的指定端口 [20000-60000]: " manual_tcp_port
+        read -p "请输入 Mieru UDP 节点的指定端口 [20000-60000]: " manual_udp_port
+    fi
+
+    echo -e "${CYAN}[INFO] 正在分配 Mieru TCP 节点端口...${NC}"
+    local tcp_port
+    tcp_port=$(get_available_port "$port_mode" "$manual_tcp_port")
+    
+    echo -e "${CYAN}[INFO] 正在分配 Mieru UDP 节点端口...${NC}"
+    local udp_port
+    udp_port=$(get_available_port "$port_mode" "$manual_udp_port")
+
+    if [[ -z "$tcp_port" || -z "$udp_port" ]]; then
+        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
+        return 1
+    fi
+
+    local tcp_user="user_$(openssl rand -hex 3 2>/dev/null)"
+    local tcp_pass="$(openssl rand -base64 12 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 16)"
+
+    local udp_user="user_$(openssl rand -hex 3 2>/dev/null)"
+    local udp_pass="$(openssl rand -base64 12 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 16)"
+
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    manage_firewall_port "add" "$tcp_port" "tcp" "YinDun-Mieru-TCP-${tcp_port}"
+    manage_firewall_port "add" "$udp_port" "udp" "YinDun-Mieru-UDP-${udp_port}"
+
+    local tcp_node_name="mieru-tcp-in-${host_name}"
+    local udp_node_name="mieru-udp-in-${host_name}"
+
+    local db_record_tcp="TYPE=mieru-tcp|NAME=${tcp_node_name}|PORT=${tcp_port}|USER=${tcp_user}|PASS=${tcp_pass}|IP=${server_ip}"
+    local db_record_udp="TYPE=mieru-udp|NAME=${udp_node_name}|PORT=${udp_port}|USER=${udp_user}|PASS=${udp_pass}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$tcp_node_name" "$tcp_port" "$tcp_user" "$tcp_pass" "$udp_node_name" "$udp_port" "$udp_user" "$udp_pass" "$db_record_tcp" "$db_record_udp" << 'PY_EOF'
+import sys
+import os
+import yaml
+
+config_path, nodes_db, t_name, t_port_s, t_user, t_pass, u_name, u_port_s, u_user, u_pass, rec_t, rec_u = sys.argv[1:13]
+t_port = int(t_port_s)
+u_port = int(u_port_s)
+
+existing_records = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("TYPE=mieru-tcp|") and not line.startswith("TYPE=mieru-udp|"):
+                existing_records.append(line)
+existing_records.append(rec_t)
+existing_records.append(rec_u)
+with open(nodes_db, "w", encoding="utf-8") as f:
+    f.write("\n".join(existing_records) + "\n")
+
+listeners = []
+if os.path.exists(config_path):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+                listeners = [l for l in loaded["listeners"] if l.get("name") not in [t_name, u_name]]
+    except Exception:
+        pass
+
+listeners.append({
+    "name": t_name,
+    "type": "mieru",
+    "port": t_port,
+    "listen": "0.0.0.0",
+    "transport": "TCP",
+    "users": {
+        t_user: t_pass
+    }
+})
+
+listeners.append({
+    "name": u_name,
+    "type": "mieru",
+    "port": u_port,
+    "listen": "0.0.0.0",
+    "transport": "UDP",
+    "users": {
+        u_user: u_pass
+    }
+})
+
+blocks = []
+for item in listeners:
+    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
+    indented = "\n".join("  " + line for line in dumped.splitlines())
+    blocks.append(indented)
+
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f:
+    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+
+    systemctl restart mihomo
+
+    echo -e "\n${GREEN}========================================================${NC}"
+    echo -e "${GREEN}  Mieru (TCP & UDP) 服务端入站已成功写入并重启！${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+    echo -e "TCP 入站标识 : ${YELLOW}${tcp_node_name} | 端口: ${tcp_port}${NC}"
+    echo -e "TCP 鉴权账号 : ${YELLOW}${tcp_user} / ${tcp_pass}${NC}"
+    echo -e "--------------------------------------------------------"
+    echo -e "UDP 入站标识 : ${YELLOW}${udp_node_name} | 端口: ${udp_port}${NC}"
+    echo -e "UDP 鉴权账号 : ${YELLOW}${udp_user} / ${udp_pass}${NC}"
     echo -e "${GREEN}========================================================${NC}"
 }
 
@@ -616,9 +748,10 @@ show_menu() {
     echo "1. 添加 VLESS-REALITY 服务端节点"
     echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + SHA-256 指纹)"
     echo "3. 添加 TUIC v5 服务端节点 (自签证书 + BBR + SNI 隔离)"
+    echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-3]: " choice
+    read -p "请选择操作 [0-4]: " choice
 
     case "$choice" in
         1)
@@ -629,6 +762,9 @@ show_menu() {
             ;;
         3)
             add_tuic_server_config
+            ;;
+        4)
+            add_mieru_server_config
             ;;
         0)
             exit 0
