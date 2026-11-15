@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5 与 Mieru 服务端入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru 与 Snell 服务端入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -219,13 +219,10 @@ select_best_reality_domain() {
     echo -n "$best_domain"
 }
 
-# ------------------------------------------------------------------------------
-# 1. VLESS-REALITY 服务端核心写入模块
-# ------------------------------------------------------------------------------
+# 1. VLESS-REALITY
 add_vless_reality_server_config() {
     check_and_install_python
     cleanup_firewall_by_type "vless-reality"
-
     local host_name
     host_name=$(hostname)
 
@@ -243,121 +240,64 @@ add_vless_reality_server_config() {
 
     local port
     port=$(get_available_port "$port_mode" "$manual_port")
-    if [[ -z "$port" ]]; then
-        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
-        return 1
-    fi
+    [[ -z "$port" ]] && return 1
 
     local uuid short_id
     uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     short_id=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
 
     local mihomo_bin="${CONFIG_DIR}/mihomo"
-    if [ ! -x "$mihomo_bin" ]; then
-        echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件 (${mihomo_bin})！${NC}"
-        return 1
-    fi
+    [ ! -x "$mihomo_bin" ] && echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件！${NC}" && return 1
 
-    echo -e "${CYAN}[INFO] 正在调用 mihomo 生成官方 Reality 密钥对...${NC}"
     local keypair private_key public_key
     keypair=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
-    
     private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
     public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
+    [[ -z "$private_key" ]] && return 1
 
-    if [[ -z "$private_key" || -z "$public_key" ]]; then
-        echo -e "${RED}[ERROR] 密钥对生成失败！${NC}"
-        return 1
-    fi
-
-    local server_name
+    local server_name server_ip
     server_name=$(select_best_reality_domain)
-    local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
-
     local node_name="vless-reality-vision-in-${host_name}"
     local db_record="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id" << 'PY_EOF'
-import sys
-import os
-import yaml
-
+import sys, os, yaml
 config_path, nodes_db, node_name, port_str, db_record, uuid, server_name, priv, short_id = sys.argv[1:10]
 port = int(port_str)
 
-existing_records = []
-if os.path.exists(nodes_db):
-    with open(nodes_db, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("TYPE=vless-reality|"):
-                existing_records.append(line)
-existing_records.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing_records) + "\n")
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=vless-reality|")] if os.path.exists(nodes_db) else []
+existing.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 
 listeners = []
 if os.path.exists(config_path):
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except Exception:
-        pass
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except: pass
 
-new_listener = {
-    "name": node_name,
-    "type": "vless",
-    "port": port,
-    "listen": "0.0.0.0",
-    "users": [
-        {"username": "1", "uuid": uuid, "flow": "xtls-rprx-vision"}
-    ],
-    "reality-config": {
-        "dest": f"{server_name}:443",
-        "private-key": priv,
-        "short-id": [short_id],
-        "server-names": [server_name]
-    }
-}
-listeners.append(new_listener)
-
-blocks = []
-for item in listeners:
-    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
-    indented = "\n".join("  " + line for line in dumped.splitlines())
-    blocks.append(indented)
-
+listeners.append({
+    "name": node_name, "type": "vless", "port": port, "listen": "0.0.0.0",
+    "users": [{"username": "1", "uuid": uuid, "flow": "xtls-rprx-vision"}],
+    "reality-config": {"dest": f"{server_name}:443", "private-key": priv, "short-id": [short_id], "server-names": [server_name]}
+})
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f:
-    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
-
     systemctl restart mihomo
-
-    echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  VLESS-REALITY 服务端入站已成功写入并重启！${NC}"
-    echo -e "${GREEN}========================================================${NC}"
-    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口 : ${YELLOW}${port}${NC}"
-    echo -e "UUID     : ${YELLOW}${uuid}${NC}"
-    echo -e "回落域名 : ${YELLOW}${server_name}${NC}"
-    echo -e "数据留档 : ${CYAN}${NODES_DB}${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "${GREEN}[SUCCESS] VLESS-REALITY 服务端入站配置完成！${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# 2. Hysteria 2 服务端核心写入模块
-# ------------------------------------------------------------------------------
+# 2. Hysteria 2
 add_hysteria2_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "hysteria2"
-
     local host_name
     host_name=$(hostname)
 
@@ -368,122 +308,62 @@ add_hysteria2_server_config() {
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto"
     local manual_port=""
-    if [[ "$port_mode_choice" == "2" ]]; then
-        port_mode="manual"
-        read -p "请输入要指定的 UDP 端口 [20000-60000]: " manual_port
-    fi
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
 
     local port
     port=$(get_available_port "$port_mode" "$manual_port")
-    if [[ -z "$port" ]]; then
-        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
-        return 1
-    fi
+    [[ -z "$port" ]] && return 1
 
     local hy2_password
     hy2_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
-
     local cert_dir="${CONFIG_DIR}/cert"
     mkdir -p "$cert_dir"
-    local cert_file="${cert_dir}/hy2.crt"
-    local key_file="${cert_dir}/hy2.key"
-    local sni_domain="gateway.icloud.com"
+    local cert_file="${cert_dir}/hy2.crt" key_file="${cert_dir}/hy2.key" sni_domain="gateway.icloud.com"
 
-    echo -e "${CYAN}[INFO] 正在为 Hysteria 2 生成自签 TLS 证书...${NC}"
     openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=${sni_domain}" 2>/dev/null
-
     local sha256_fingerprint
     sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-
-    if [[ -z "$sha256_fingerprint" ]]; then
-        echo -e "${RED}[ERROR] 证书 SHA-256 指纹计算失败！${NC}"
-        return 1
-    fi
-
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
-
     local node_name="hysteria2-in-${host_name}"
     local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file" << 'PY_EOF'
-import sys
-import os
-import yaml
-
+import sys, os, yaml
 config_path, nodes_db, node_name, port_str, db_record, password, cert_file, key_file = sys.argv[1:9]
 port = int(port_str)
 
-existing_records = []
-if os.path.exists(nodes_db):
-    with open(nodes_db, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("TYPE=hysteria2|"):
-                existing_records.append(line)
-existing_records.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing_records) + "\n")
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=hysteria2|")] if os.path.exists(nodes_db) else []
+existing.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 
 listeners = []
 if os.path.exists(config_path):
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except Exception:
-        pass
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except: pass
 
-new_listener = {
-    "name": node_name,
-    "type": "hysteria2",
-    "port": port,
-    "listen": "0.0.0.0",
-    "users": {
-        "1": password
-    },
-    "alpn": ["h3"],
-    "certificate": cert_file,
-    "private-key": key_file
-}
-listeners.append(new_listener)
-
-blocks = []
-for item in listeners:
-    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
-    indented = "\n".join("  " + line for line in dumped.splitlines())
-    blocks.append(indented)
-
+listeners.append({
+    "name": node_name, "type": "hysteria2", "port": port, "listen": "0.0.0.0",
+    "users": {"1": password}, "alpn": ["h3"], "certificate": cert_file, "private-key": key_file
+})
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f:
-    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
-
     systemctl restart mihomo
-
-    echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  Hysteria 2 服务端入站已成功追加写入并重启！${NC}"
-    echo -e "${GREEN}========================================================${NC}"
-    echo -e "入站标识   : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口   : ${YELLOW}${port} (UDP)${NC}"
-    echo -e "连接密码   : ${YELLOW}${hy2_password}${NC}"
-    echo -e "伪装 SNI   : ${YELLOW}${sni_domain}${NC}"
-    echo -e "SHA-256指纹: ${YELLOW}${sha256_fingerprint}${NC}"
-    echo -e "数据留档   : ${CYAN}${NODES_DB}${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "${GREEN}[SUCCESS] Hysteria 2 服务端入站配置完成！${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# 3. TUIC v5 服务端核心写入模块
-# ------------------------------------------------------------------------------
+# 3. TUIC v5
 add_tuic_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "tuic"
-
     local host_name
     host_name=$(hostname)
 
@@ -492,128 +372,66 @@ add_tuic_server_config() {
     echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto"
-    local manual_port=""
-    if [[ "$port_mode_choice" == "2" ]]; then
-        port_mode="manual"
-        read -p "请输入要指定的 UDP 端口 [20000-60000]: " manual_port
-    fi
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
 
     local port
     port=$(get_available_port "$port_mode" "$manual_port")
-    if [[ -z "$port" ]]; then
-        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
-        return 1
-    fi
+    [[ -z "$port" ]] && return 1
 
-    local tuic_uuid
+    local tuic_uuid tuic_password
     tuic_uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
-    local tuic_password
     tuic_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
-
     local cert_dir="${CONFIG_DIR}/cert"
     mkdir -p "$cert_dir"
-    local cert_file="${cert_dir}/tuic.crt"
-    local key_file="${cert_dir}/tuic.key"
-    local sni_domain="www.apple.com"
+    local cert_file="${cert_dir}/tuic.crt" key_file="${cert_dir}/tuic.key" sni_domain="www.apple.com"
 
-    echo -e "${CYAN}[INFO] 正在为 TUIC v5 生成独立的自签 TLS 证书 (SNI: ${sni_domain})...${NC}"
     openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=${sni_domain}" 2>/dev/null
-
     local sha256_fingerprint
     sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-
-    if [[ -z "$sha256_fingerprint" ]]; then
-        echo -e "${RED}[ERROR] 证书 SHA-256 指纹计算失败！${NC}"
-        return 1
-    fi
-
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "udp" "YinDun-Tuic-${port}"
-
     local node_name="tuic-in-${host_name}"
     local db_record="TYPE=tuic|NAME=${node_name}|PORT=${port}|UUID=${tuic_uuid}|PASSWORD=${tuic_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$tuic_uuid" "$tuic_password" "$cert_file" "$key_file" "$sni_domain" << 'PY_EOF'
-import sys
-import os
-import yaml
-
-config_path, nodes_db, node_name, port_str, db_record, tuic_uuid, password, cert_file, key_file, sni_domain = sys.argv[1:11]
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$tuic_uuid" "$tuic_password" "$cert_file" "$key_file" << 'PY_EOF'
+import sys, os, yaml
+config_path, nodes_db, node_name, port_str, db_record, tuic_uuid, password, cert_file, key_file = sys.argv[1:10]
 port = int(port_str)
 
-existing_records = []
-if os.path.exists(nodes_db):
-    with open(nodes_db, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("TYPE=tuic|"):
-                existing_records.append(line)
-existing_records.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing_records) + "\n")
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=tuic|")] if os.path.exists(nodes_db) else []
+existing.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 
 listeners = []
 if os.path.exists(config_path):
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-                listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except Exception:
-        pass
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except: pass
 
-new_listener = {
-    "name": node_name,
-    "type": "tuic",
-    "port": port,
-    "listen": "0.0.0.0",
-    "users": {
-        tuic_uuid: password
-    },
-    "congestion-controller": "bbr",
-    "alpn": ["h3"],
-    "certificate": cert_file,
-    "private-key": key_file
-}
-listeners.append(new_listener)
-
-blocks = []
-for item in listeners:
-    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
-    indented = "\n".join("  " + line for line in dumped.splitlines())
-    blocks.append(indented)
-
+listeners.append({
+    "name": node_name, "type": "tuic", "port": port, "listen": "0.0.0.0",
+    "users": {tuic_uuid: password}, "congestion-controller": "bbr", "alpn": ["h3"],
+    "certificate": cert_file, "private-key": key_file
+})
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f:
-    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
-
     systemctl restart mihomo
-
-    echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  TUIC v5 服务端入站已成功写入并重启！${NC}"
-    echo -e "${GREEN}========================================================${NC}"
-    echo -e "入站标识   : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口   : ${YELLOW}${port} (UDP)${NC}"
-    echo -e "鉴权 UUID  : ${YELLOW}${tuic_uuid}${NC}"
-    echo -e "鉴权密码   : ${YELLOW}${tuic_password}${NC}"
-    echo -e "SHA-256指纹: ${YELLOW}${sha256_fingerprint}${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+    echo -e "${GREEN}[SUCCESS] TUIC v5 服务端入站配置完成！${NC}"
 }
 
-# ------------------------------------------------------------------------------
-# 4. Mieru (TCP & UDP) 服务端核心写入模块
-# ------------------------------------------------------------------------------
+# 4. Mieru (TCP & UDP)
 add_mieru_server_config() {
     check_and_install_python
     check_and_install_dependencies
-    
     cleanup_firewall_by_type "mieru-tcp"
     cleanup_firewall_by_type "mieru-udp"
-
     local host_name
     host_name=$(hostname)
 
@@ -622,122 +440,119 @@ add_mieru_server_config() {
     echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto"
-    local manual_tcp_port=""
-    local manual_udp_port=""
-    
-    if [[ "$port_mode_choice" == "2" ]]; then
-        port_mode="manual"
-        read -p "请输入 Mieru TCP 节点的指定端口 [20000-60000]: " manual_tcp_port
-        read -p "请输入 Mieru UDP 节点的指定端口 [20000-60000]: " manual_udp_port
-    fi
+    local port_mode="auto" manual_tcp="" manual_udp=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "TCP 端口: " manual_tcp && read -p "UDP 端口: " manual_udp
 
-    echo -e "${CYAN}[INFO] 正在分配 Mieru TCP 节点端口...${NC}"
-    local tcp_port
-    tcp_port=$(get_available_port "$port_mode" "$manual_tcp_port")
-    
-    echo -e "${CYAN}[INFO] 正在分配 Mieru UDP 节点端口...${NC}"
-    local udp_port
-    udp_port=$(get_available_port "$port_mode" "$manual_udp_port")
+    local tcp_port udp_port
+    tcp_port=$(get_available_port "$port_mode" "$manual_tcp")
+    udp_port=$(get_available_port "$port_mode" "$manual_udp")
+    [[ -z "$tcp_port" || -z "$udp_port" ]] && return 1
 
-    if [[ -z "$tcp_port" || -z "$udp_port" ]]; then
-        echo -e "${RED}[ERROR] 端口获取失败，取消操作。${NC}"
-        return 1
-    fi
-
-    local tcp_user="user_$(openssl rand -hex 3 2>/dev/null)"
-    local tcp_pass="$(openssl rand -base64 12 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 16)"
-
-    local udp_user="user_$(openssl rand -hex 3 2>/dev/null)"
-    local udp_pass="$(openssl rand -base64 12 2>/dev/null | tr -dc 'a-zA-Z0-9' | head -c 16)"
-
+    local t_user="user_$(openssl rand -hex 3)" t_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    local u_user="user_$(openssl rand -hex 3)" u_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$tcp_port" "tcp" "YinDun-Mieru-TCP-${tcp_port}"
     manage_firewall_port "add" "$udp_port" "udp" "YinDun-Mieru-UDP-${udp_port}"
 
-    local tcp_node_name="mieru-tcp-in-${host_name}"
-    local udp_node_name="mieru-udp-in-${host_name}"
+    local t_name="mieru-tcp-in-${host_name}" u_name="mieru-udp-in-${host_name}"
+    local rec_t="TYPE=mieru-tcp|NAME=${t_name}|PORT=${tcp_port}|USER=${t_user}|PASS=${t_pass}|IP=${server_ip}"
+    local rec_u="TYPE=mieru-udp|NAME=${u_name}|PORT=${udp_port}|USER=${u_user}|PASS=${u_pass}|IP=${server_ip}"
 
-    local db_record_tcp="TYPE=mieru-tcp|NAME=${tcp_node_name}|PORT=${tcp_port}|USER=${tcp_user}|PASS=${tcp_pass}|IP=${server_ip}"
-    local db_record_udp="TYPE=mieru-udp|NAME=${udp_node_name}|PORT=${udp_port}|USER=${udp_user}|PASS=${udp_pass}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$tcp_node_name" "$tcp_port" "$tcp_user" "$tcp_pass" "$udp_node_name" "$udp_port" "$udp_user" "$udp_pass" "$db_record_tcp" "$db_record_udp" << 'PY_EOF'
-import sys
-import os
-import yaml
-
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$t_name" "$tcp_port" "$t_user" "$t_pass" "$u_name" "$udp_port" "$u_user" "$u_pass" "$rec_t" "$rec_u" << 'PY_EOF'
+import sys, os, yaml
 config_path, nodes_db, t_name, t_port_s, t_user, t_pass, u_name, u_port_s, u_user, u_pass, rec_t, rec_u = sys.argv[1:13]
-t_port = int(t_port_s)
-u_port = int(u_port_s)
+t_port, u_port = int(t_port_s), int(u_port_s)
 
-existing_records = []
-if os.path.exists(nodes_db):
-    with open(nodes_db, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("TYPE=mieru-tcp|") and not line.startswith("TYPE=mieru-udp|"):
-                existing_records.append(line)
-existing_records.append(rec_t)
-existing_records.append(rec_u)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing_records) + "\n")
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=mieru-tcp|") and not l.startswith("TYPE=mieru-udp|")] if os.path.exists(nodes_db) else []
+existing.extend([rec_t, rec_u])
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 
 listeners = []
 if os.path.exists(config_path):
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            loaded = yaml.safe_load(f)
-            if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-                listeners = [l for l in loaded["listeners"] if l.get("name") not in [t_name, u_name]]
-    except Exception:
-        pass
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") not in [t_name, u_name]]
+    except: pass
 
-listeners.append({
-    "name": t_name,
-    "type": "mieru",
-    "port": t_port,
-    "listen": "0.0.0.0",
-    "transport": "TCP",
-    "users": {
-        t_user: t_pass
-    }
-})
+listeners.append({"name": t_name, "type": "mieru", "port": t_port, "listen": "0.0.0.0", "transport": "TCP", "users": {t_user: t_pass}})
+listeners.append({"name": u_name, "type": "mieru", "port": u_port, "listen": "0.0.0.0", "transport": "UDP", "users": {u_user: u_pass}})
 
-listeners.append({
-    "name": u_name,
-    "type": "mieru",
-    "port": u_port,
-    "listen": "0.0.0.0",
-    "transport": "UDP",
-    "users": {
-        u_user: u_pass
-    }
-})
-
-blocks = []
-for item in listeners:
-    dumped = yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip()
-    indented = "\n".join("  " + line for line in dumped.splitlines())
-    blocks.append(indented)
-
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f:
-    f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
-
     systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] Mieru (TCP & UDP) 服务端入站配置完成！${NC}"
+}
 
-    echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  Mieru (TCP & UDP) 服务端入站已成功写入并重启！${NC}"
-    echo -e "${GREEN}========================================================${NC}"
-    echo -e "TCP 入站标识 : ${YELLOW}${tcp_node_name} | 端口: ${tcp_port}${NC}"
-    echo -e "TCP 鉴权账号 : ${YELLOW}${tcp_user} / ${tcp_pass}${NC}"
-    echo -e "--------------------------------------------------------"
-    echo -e "UDP 入站标识 : ${YELLOW}${udp_node_name} | 端口: ${udp_port}${NC}"
-    echo -e "UDP 鉴权账号 : ${YELLOW}${udp_user} / ${udp_pass}${NC}"
-    echo -e "${GREEN}========================================================${NC}"
+# 5. Snell (Mihomo 原生入站)
+add_snell_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    cleanup_firewall_by_type "snell"
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}        开始配置并写入 Snell (原生入站) 服务端入站        ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入端口: " manual_port
+
+    local port
+    port=$(get_available_port "$port_mode" "$manual_port")
+    [[ -z "$port" ]] && return 1
+
+    local snell_psk
+    snell_psk=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    manage_firewall_port "add" "$port" "tcp" "YinDun-Snell-${port}"
+    local node_name="snell-in-${host_name}"
+    local db_record="TYPE=snell|NAME=${node_name}|PORT=${port}|PSK=${snell_psk}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$snell_psk" "$db_record" << 'PY_EOF'
+import sys, os, yaml
+config_path, nodes_db, node_name, port_str, psk, db_record = sys.argv[1:7]
+port = int(port_str)
+
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=snell|")] if os.path.exists(nodes_db) else []
+existing.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
+listeners = []
+if os.path.exists(config_path):
+    try:
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except: pass
+
+listeners.append({
+    "name": node_name,
+    "type": "snell",
+    "port": port,
+    "listen": "0.0.0.0",
+    "psk": psk,
+    "version": 4,
+    "udp": True
+})
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+    systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] Snell 原生入站配置已写入并重启！${NC}"
+    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
+    echo -e "监听端口 : ${YELLOW}${port} (TCP)${NC}"
+    echo -e "PSK 密码 : ${YELLOW}${snell_psk}${NC}"
+    echo -e "协议版本 : ${YELLOW}v4 (UDP over TCP)${NC}"
 }
 
 show_menu() {
@@ -749,29 +564,19 @@ show_menu() {
     echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + SHA-256 指纹)"
     echo "3. 添加 TUIC v5 服务端节点 (自签证书 + BBR + SNI 隔离)"
     echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
+    echo "5. 添加 Snell (Mihomo 原生入站 v4) 服务端节点"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-4]: " choice
+    read -p "请选择操作 [0-5]: " choice
 
     case "$choice" in
-        1)
-            add_vless_reality_server_config
-            ;;
-        2)
-            add_hysteria2_server_config
-            ;;
-        3)
-            add_tuic_server_config
-            ;;
-        4)
-            add_mieru_server_config
-            ;;
-        0)
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}[ERROR] 无效的选择！${NC}"
-            ;;
+        1) add_vless_reality_server_config ;;
+        2) add_hysteria2_server_config ;;
+        3) add_tuic_server_config ;;
+        4) add_mieru_server_config ;;
+        5) add_snell_server_config ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
     esac
 }
 
