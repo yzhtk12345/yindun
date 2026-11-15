@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已适配标准 mierus:// 通用分享链接格式）
+# Description: 本地订阅分发守护进程（已全面支持 Snell v6 及模式解析）
 # ==============================================================================
 
 RED="\033[31m"
@@ -41,87 +41,50 @@ cleanup_old_sub_firewall_rules() {
         old_port=$(cat "$PORT_RECORD_FILE")
         if [[ -n "$old_port" ]]; then
             case "$fw_type" in
-                ufw)
-                    ufw delete allow "${old_port}/tcp" >/dev/null 2>&1
-                    ufw reload >/dev/null 2>&1
-                    ;;
-                firewalld)
-                    firewall-cmd --permanent --remove-port="${old_port}/tcp" >/dev/null 2>&1
-                    firewall-cmd --reload >/dev/null 2>&1
-                    ;;
-                iptables)
-                    iptables -D INPUT -p tcp --dport "$old_port" -j ACCEPT 2>/dev/null || true
-                    ;;
+                ufw) ufw delete allow "${old_port}/tcp" >/dev/null 2>&1; ufw reload >/dev/null 2>&1 ;;
+                firewalld) firewall-cmd --permanent --remove-port="${old_port}/tcp" >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 ;;
+                iptables) iptables -D INPUT -p tcp --dport "$old_port" -j ACCEPT 2>/dev/null || true ;;
             esac
         fi
     fi
 }
 
 manage_firewall_port() {
-    local action="$1"
-    local port="$2"
-    local comment="$3"
-    local fw_type
+    local action="$1" port="$2" comment="$3" fw_type
     fw_type=$(detect_firewall)
 
     case "$fw_type" in
-        ufw)
-            if [[ "$action" == "add" ]]; then
-                ufw allow "$port/tcp" comment "$comment" >/dev/null 2>&1
-                ufw reload >/dev/null 2>&1
-            fi
-            ;;
-        firewalld)
-            if [[ "$action" == "add" ]]; then
-                firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1
-                firewall-cmd --reload >/dev/null 2>&1
-            fi
-            ;;
-        iptables)
-            if [[ "$action" == "add" ]]; then
-                iptables -A INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null
-            fi
-            ;;
+        ufw) [[ "$action" == "add" ]] && ufw allow "$port/tcp" comment "$comment" >/dev/null 2>&1 && ufw reload >/dev/null 2>&1 ;;
+        firewalld) [[ "$action" == "add" ]] && firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
+        iptables) [[ "$action" == "add" ]] && iptables -A INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null ;;
     esac
 }
 
 check_port_used() {
     local port="$1"
-    if command -v ss &>/dev/null; then
-        ss -tuln | grep -q ":${port} " && return 0 || return 1
-    else
-        nc -z 127.0.0.1 "$port" &>/dev/null && return 0 || return 1
-    fi
+    command -v ss &>/dev/null && ss -tuln | grep -q ":${port} " && return 0 || nc -z 127.0.0.1 "$port" &>/dev/null && return 0 || return 1
 }
 
 get_web_port() {
     local target_port=""
-    
     if [ -f "$PORT_RECORD_FILE" ]; then
         target_port=$(cat "$PORT_RECORD_FILE")
         if [[ "$target_port" =~ ^[0-9]+$ ]] && [ "$target_port" -ge 10000 ] && [ "$target_port" -le 20000 ]; then
-            echo -e "${CYAN}[INFO] 检测到已固化的订阅服务端口: ${target_port}${NC}" >&2
             read -p "是否需要重新生成随机端口和重置 Token？[y/N]: " reset_choice
             if [[ "$reset_choice" =~ ^[Yy]$ ]]; then
                 cleanup_old_sub_firewall_rules
-                rm -f "$PORT_RECORD_FILE"
-                rm -f "$TOKEN_FILE"
+                rm -f "$PORT_RECORD_FILE" "$TOKEN_FILE"
                 target_port=""
             fi
         fi
     fi
-
     if [ -z "$target_port" ]; then
         while true; do
             target_port=$((RANDOM % 10001 + 10000))
-            if ! check_port_used "$target_port"; then
-                break
-            fi
+            ! check_port_used "$target_port" && break
         done
         echo "$target_port" > "$PORT_RECORD_FILE"
-        echo -e "${GREEN}[INFO] 已为您新分配并固化订阅服务端口: ${target_port}${NC}" >&2
     fi
-
     echo "$target_port"
 }
 
@@ -129,10 +92,7 @@ get_public_ip() {
     local ip=""
     for service in "https://api.ipify.org" "https://ip.sb" "https://icanhazip.com"; do
         ip=$(curl -s4 --max-time 3 "$service" 2>/dev/null | tr -d '[:space:]')
-        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "$ip"
-            return 0
-        fi
+        [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$ip" && return 0
     done
     echo "45.207.156.146"
 }
@@ -141,20 +101,14 @@ stop_daemon() {
     if [ -f "$PID_FILE" ]; then
         local pid
         pid=$(cat "$PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            echo -e "${GREEN}[INFO] 已停止旧的订阅后台服务 (PID: ${pid})${NC}"
-        fi
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
         rm -f "$PID_FILE"
     fi
 }
 
-# 1. 编写独立的订阅文件生成脚本
 prepare_subscription_generator() {
     cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
-import os
-import urllib.parse
-import json
+import os, urllib.parse, json
 
 config_dir = os.path.dirname(os.path.abspath(__file__))
 nodes_db = os.path.join(config_dir, "all_nodes.txt")
@@ -171,30 +125,17 @@ if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if not line:
-                continue
+            if not line: continue
             
-            parts = {}
-            for item in line.split("|"):
-                if "=" in item:
-                    k, v = item.split("=", 1)
-                    parts[k] = v
-
+            parts = {k: v for item in line.split("|") if "=" in item for k, v in [item.split("=", 1)]}
             node_type = parts.get("TYPE")
 
-            # A. 解析 VLESS-REALITY 节点
+            # A. VLESS-REALITY
             if node_type == "vless-reality":
                 name = parts.get("NAME", "node").replace("-in-", "-out-")
-                ip = parts.get("IP", "127.0.0.1")
-                port_val = parts.get("PORT", "443")
-                uuid = parts.get("UUID", "")
-                pub = parts.get("PUB", "")
-                shortid = parts.get("SHORTID", "")
-                domain = parts.get("DOMAIN", "gateway.icloud.com")
-
+                ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
                 node_names.append(name)
-
-                mi_proxy = f"""  - name: "{name}"
+                mi_proxies.append(f"""  - name: "{name}"
     type: vless
     server: {ip}
     port: {port_val}
@@ -208,41 +149,16 @@ if os.path.exists(nodes_db):
     reality-opts:
       public-key: {pub}
       short-id: {shortid}
-      support-x25519mlkem768: false"""
-                mi_proxies.append(mi_proxy)
+      support-x25519mlkem768: false""")
+                box_outbounds.append({"type": "vless", "tag": name, "server": ip, "server_port": int(port_val), "uuid": uuid, "flow": "xtls-rprx-vision", "tls": {"enabled": True, "server_name": domain, "utls": {"enabled": True, "fingerprint": "chrome"}, "reality": {"enabled": True, "public_key": pub, "short_id": shortid}}})
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{urllib.parse.quote(name)}")
 
-                box_dict = {
-                    "type": "vless",
-                    "tag": name,
-                    "server": ip,
-                    "server_port": int(port_val),
-                    "uuid": uuid,
-                    "flow": "xtls-rprx-vision",
-                    "tls": {
-                        "enabled": True,
-                        "server_name": domain,
-                        "utls": {"enabled": True, "fingerprint": "chrome"},
-                        "reality": {"enabled": True, "public_key": pub, "short_id": shortid}
-                    }
-                }
-                box_outbounds.append(box_dict)
-
-                encoded_name = urllib.parse.quote(name)
-                vless_link = f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{encoded_name}"
-                all_links.append(vless_link)
-
-            # B. 解析 Hysteria 2 节点
+            # B. Hysteria 2
             elif node_type == "hysteria2":
                 name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
-                ip = parts.get("IP", "127.0.0.1")
-                port_val = parts.get("PORT", "443")
-                password = parts.get("PASSWORD", "")
-                fingerprint = parts.get("FINGERPRINT", "")
-                sni = parts.get("SNI", "gateway.icloud.com")
-
+                ip, port_val, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "gateway.icloud.com")
                 node_names.append(name)
-
-                mi_proxy = f"""  - name: "{name}"
+                mi_proxies.append(f"""  - name: "{name}"
     type: hysteria2
     server: {ip}
     port: {port_val}
@@ -251,41 +167,16 @@ if os.path.exists(nodes_db):
     skip-cert-verify: false
     fingerprint: {fingerprint}
     alpn:
-      - h3"""
-                mi_proxies.append(mi_proxy)
+      - h3""")
+                box_outbounds.append({"type": "hysteria2", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}})
+                all_links.append(f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{urllib.parse.quote(name)}")
 
-                box_dict = {
-                    "type": "hysteria2",
-                    "tag": name,
-                    "server": ip,
-                    "server_port": int(port_val),
-                    "password": password,
-                    "tls": {
-                        "enabled": True,
-                        "server_name": sni,
-                        "insecure": True,
-                        "alpn": ["h3"]
-                    }
-                }
-                box_outbounds.append(box_dict)
-
-                encoded_name = urllib.parse.quote(name)
-                hy2_link = f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{encoded_name}"
-                all_links.append(hy2_link)
-
-            # C. 解析 TUIC v5 节点
+            # C. TUIC v5
             elif node_type == "tuic":
                 name = parts.get("NAME", "tuic-node").replace("-in-", "-out-")
-                ip = parts.get("IP", "127.0.0.1")
-                port_val = parts.get("PORT", "443")
-                tuic_uuid = parts.get("UUID", "")
-                password = parts.get("PASSWORD", "")
-                fingerprint = parts.get("FINGERPRINT", "")
-                sni = parts.get("SNI", "www.apple.com")
-
+                ip, port_val, tuic_uuid, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "www.apple.com")
                 node_names.append(name)
-
-                mi_proxy = f"""  - name: "{name}"
+                mi_proxies.append(f"""  - name: "{name}"
     type: tuic
     server: {ip}
     port: {port_val}
@@ -296,55 +187,41 @@ if os.path.exists(nodes_db):
     fingerprint: {fingerprint}
     congestion-controller: bbr
     alpn:
-      - h3"""
-                mi_proxies.append(mi_proxy)
+      - h3""")
+                box_outbounds.append({"type": "tuic", "tag": name, "server": ip, "server_port": int(port_val), "uuid": tuic_uuid, "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}, "congestion_control": "bbr"})
+                all_links.append(f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{urllib.parse.quote(name)}")
 
-                box_dict = {
-                    "type": "tuic",
-                    "tag": name,
-                    "server": ip,
-                    "server_port": int(port_val),
-                    "uuid": tuic_uuid,
-                    "password": password,
-                    "tls": {
-                        "enabled": True,
-                        "server_name": sni,
-                        "insecure": True,
-                        "alpn": ["h3"]
-                    },
-                    "congestion_control": "bbr"
-                }
-                box_outbounds.append(box_dict)
-
-                encoded_name = urllib.parse.quote(name)
-                tuic_link = f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{encoded_name}"
-                all_links.append(tuic_link)
-
-            # D. 解析 Mieru TCP / UDP 节点 (采用标准 mierus:// 通用链接格式，Sing-box 自动跳过)
+            # D. Mieru TCP / UDP
             elif node_type in ["mieru-tcp", "mieru-udp"]:
                 name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
-                ip = parts.get("IP", "127.0.0.1")
-                port_val = parts.get("PORT", "443")
-                username = parts.get("USER", "")
-                password = parts.get("PASS", "")
+                ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
                 transport_type = "TCP" if node_type == "mieru-tcp" else "UDP"
-
                 node_names.append(name)
-
-                mi_proxy = f"""  - name: "{name}"
+                mi_proxies.append(f"""  - name: "{name}"
     type: mieru
     server: {ip}
     port: {port_val}
     username: {username}
     password: {password}
-    transport: {transport_type}"""
-                mi_proxies.append(mi_proxy)
+    transport: {transport_type}""")
+                all_links.append(f"mierus://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?profile={urllib.parse.quote(name)}&port={port_val}&protocol={transport_type}#{urllib.parse.quote(name)}")
 
-                encoded_user = urllib.parse.quote(username)
-                encoded_pass = urllib.parse.quote(password)
-                encoded_name = urllib.parse.quote(name)
-                mieru_link = f"mierus://{encoded_user}:{encoded_pass}@{ip}:{port_val}?profile={encoded_name}&port={port_val}&protocol={transport_type}#{encoded_name}"
-                all_links.append(mieru_link)
+            # E. Snell v6 (Mihomo 原生入站 v6，支持 mode)
+            elif node_type == "snell":
+                name = parts.get("NAME", "snell-node").replace("-in-", "-out-")
+                ip, port_val, psk = parts.get("IP"), parts.get("PORT"), parts.get("PSK")
+                v_version = parts.get("VERSION", "6")
+                v_mode = parts.get("MODE", "default")
+                node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: snell
+    server: {ip}
+    port: {port_val}
+    psk: {psk}
+    version: {v_version}
+    udp: true
+    mode: {v_mode}""")
+                all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
 proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
 
@@ -406,8 +283,7 @@ rules:
   - MATCH,🌍选择代理节点
 """
 
-with open(mi_links_path, "w", encoding="utf-8") as f:
-    f.write(mihomo_full_config)
+with open(mi_links_path, "w", encoding="utf-8") as f: f.write(mihomo_full_config)
 
 selector_outbounds = ["auto"] + node_names if node_names else ["direct"]
 auto_outbounds = node_names if node_names else ["direct"]
@@ -423,128 +299,75 @@ singbox_full_config = {
     "route": {"final": "proxy"}
 }
 
-with open(box_links_path, "w", encoding="utf-8") as f:
-    json.dump(singbox_full_config, f, indent=2, ensure_ascii=False)
-
-with open(all_links_path, "w", encoding="utf-8") as f:
-    f.write("\n".join(all_links) + "\n")
+with open(box_links_path, "w", encoding="utf-8") as f: json.dump(singbox_full_config, f, indent=2, ensure_ascii=False)
+with open(all_links_path, "w", encoding="utf-8") as f: f.write("\n".join(all_links) + "\n")
 EOF
 }
 
-# 2. 编写独立的 HTTP 服务端脚本
 prepare_python_server() {
     cat << 'EOF' > "$PYTHON_SERVER_FILE"
-import http.server
-import urllib.parse
-import sys
-import os
-import base64
+import http.server, urllib.parse, sys, os, base64
 
-port = int(sys.argv[1])
-token = sys.argv[2]
-config_dir = sys.argv[3]
+port, token, config_dir = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 
 class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        parsed_path = urllib.parse.urlparse(self.path)
-        query_params = urllib.parse.parse_qs(parsed_path.query)
-        user_token = query_params.get("token", [""])[0]
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        if params.get("token", [""])[0] != token:
+            self.send_response(403); self.end_headers(); self.wfile.write(b"Access Denied"); return
 
-        if user_token != token:
-            self.send_response(403)
-            self.end_headers()
-            self.wfile.write(b"Access Denied")
-            return
-
-        if parsed_path.path in ["/", "/all"]:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            file_path = os.path.join(config_dir, "all_links.txt")
-            if os.path.exists(file_path):
-                with open(file_path, "rb") as f:
-                    self.wfile.write(base64.b64encode(f.read()))
-        elif parsed_path.path == "/raw":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            file_path = os.path.join(config_dir, "all_links.txt")
-            if os.path.exists(file_path):
-                with open(file_path, "rb") as f:
-                    self.wfile.write(f.read())
-        elif parsed_path.path == "/box":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.end_headers()
-            file_path = os.path.join(config_dir, "box_links.json")
-            if os.path.exists(file_path):
-                with open(file_path, "rb") as f:
-                    self.wfile.write(f.read())
-        elif parsed_path.path == "/mi":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/yaml; charset=utf-8")
-            self.end_headers()
-            file_path = os.path.join(config_dir, "mi_links.yaml")
-            if os.path.exists(file_path):
-                with open(file_path, "rb") as f:
-                    self.wfile.write(f.read())
+        if parsed.path in ["/", "/all"]:
+            self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "all_links.txt")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(base64.b64encode(f.read()))
+        elif parsed.path == "/raw":
+            self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "all_links.txt")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(f.read())
+        elif parsed.path == "/box":
+            self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "box_links.json")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(f.read())
+        elif parsed.path == "/mi":
+            self.send_response(200); self.send_header("Content-Type", "text/yaml; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "mi_links.yaml")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(f.read())
         else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Not Found")
+            self.send_response(404); self.end_headers(); self.wfile.write(b"Not Found")
 
-    def log_message(self, format, *args):
-        pass
+    def log_message(self, format, *args): pass
 
-server = http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler)
-server.serve_forever()
+http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler).serve_forever()
 EOF
 }
 
 start_daemon() {
-    if [ ! -f "$NODES_DB" ]; then
-        echo -e "${RED}[ERROR] 找不到总账本文件: ${NODES_DB}${NC}"
-        return 1
-    fi
-
+    [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
     stop_daemon
-
-    if [ ! -f "$TOKEN_FILE" ]; then
-        openssl rand -hex 32 > "$TOKEN_FILE"
-    fi
+    [ ! -f "$TOKEN_FILE" ] && openssl rand -hex 32 > "$TOKEN_FILE"
 
     local web_port
     web_port=$(get_web_port | grep -oE '[0-9]+' | tail -n 1)
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
-    echo -e "${CYAN}[INFO] 正在生成多协议订阅文件...${NC}"
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
-
     prepare_python_server
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
-
     local server_ip
     server_ip=$(get_public_ip)
 
     cd "${CONFIG_DIR}" || exit
     nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
-    local new_pid=$!
-    echo "$new_pid" > "$PID_FILE"
+    echo $! > "$PID_FILE"
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${GREEN}  YinDun 客户端订阅守护进程已在后台成功启动！${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "服务端口 : ${YELLOW}${web_port}${NC}"
-    echo -e "安全 Token : ${YELLOW}${SUB_TOKEN}${NC}"
-    echo -e "${CYAN}--------------------------------------------------------${NC}"
-    echo -e "1. 主订阅链接 (通用 Base64 导入源):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
-    echo -e "2. Sing-box 专属订阅 (box_links.json):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
-    echo -e "3. Mihomo 专属订阅 (mi_links.yaml):"
-    echo -e "   ${GREEN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
-    echo -e "${CYAN}========================================================${NC}"
+    echo -e "\n${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
+    echo -e "主订阅链接: ${GREEN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
