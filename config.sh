@@ -105,7 +105,7 @@ cleanup_firewall_by_type() {
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q "TYPE=${target_type}|" || echo "$line" | grep -q "TYPE=anytls"; then
+            if echo "$line" | grep -q "TYPE=${target_type}|"; then
                 local old_p
                 old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
                 if [[ -n "$old_p" ]]; then
@@ -191,32 +191,39 @@ REALITY_CANDIDATES=(
     "speed.cloudflare.com"
 )
 
-select_best_reality_domain() {
-    echo -e "${CYAN}[INFO] 正在对候选伪装域名进行测速优选...${NC}" >&2
-    local best_domain="gateway.icloud.com"
-    local temp_file="/tmp/yindun_domain_test.log"
+# 通用候选域名测速优选函数（支持传入自定义域名列表）
+select_best_domain_from_list() {
+    local fallback="$1"
+    shift
+    local candidates=("$@")
+    local best_domain="$fallback"
+    local temp_file="/tmp/yindun_custom_domain_test.log"
     > "$temp_file"
 
-    for domain in "${REALITY_CANDIDATES[@]}"; do
+    for domain in "${candidates[@]}"; do
         local time_cost
         time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 域名: ${domain} | 延迟: ${ms} ms" >&2
+            echo -e "  -> 候选: ${domain} | 延迟: ${ms} ms" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
 
     if [ -s "$temp_file" ]; then
         best_domain=$(sort -n "$temp_file" | head -n 1 | awk '{print $2}')
-        echo -e "${GREEN}[SUCCESS] 已自动选中最优域名: ${best_domain}${NC}" >&2
+        echo -e "${GREEN}[SUCCESS] 已优选低延迟域名: ${best_domain}${NC}" >&2
     else
-        echo -e "${YELLOW}[WARN] 测速未完成，兜底使用: ${best_domain}${NC}" >&2
+        echo -e "${YELLOW}[WARN] 测速超时，使用默认可用域名: ${best_domain}${NC}" >&2
     fi
     rm -f "$temp_file"
-    
     echo -n "$best_domain"
+}
+
+select_best_reality_domain() {
+    echo -e "${CYAN}[INFO] 正在对候选伪装域名进行测速优选...${NC}" >&2
+    select_best_domain_from_list "gateway.icloud.com" "${REALITY_CANDIDATES[@]}"
 }
 
 # 1. VLESS-REALITY
@@ -628,7 +635,7 @@ PY_EOF
     echo -e "JLS 伪装 : ${YELLOW}${jls_addr}${NC}"
 }
 
-# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS) - 纯 TCP 端口
+# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS) - 独立低调高权重域名优选版
 add_anytls_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -637,7 +644,7 @@ add_anytls_all_modes_server_config() {
     host_name=$(hostname)
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 AnyTLS 四大模式服务端入站       ${NC}"
+    echo -e "${CYAN}  开始配置并写入 AnyTLS 四大模式服务端入站 (智能优选伪装)  ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
     # 1. 准备标准模式专属简洁自签证书 (anytls.crt / anytls.key) 放在 /etc/yindun/mihomo/cert/
@@ -647,8 +654,21 @@ add_anytls_all_modes_server_config() {
     local key_file="${cert_dir}/anytls.key"
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
         echo -e "${CYAN}[INFO] 正在生成 AnyTLS 简洁自签证书 (anytls.crt / anytls.key)...${NC}"
-        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=microsoft.com" 2>/dev/null
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=download.nvidia.com" 2>/dev/null
     fi
+
+    # 2. 为三个高级模式分别测速优选不撞脸的高可用 CDN/软件分发域名
+    echo -e "${CYAN}[INFO] 正在为 Shadow-TLS 优选驱动/硬件CDN域名...${NC}"
+    local stls_domain
+    stls_domain=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com" "downloads.dell.com")
+
+    echo -e "${CYAN}[INFO] 正在为 ResTLS 优选游戏/内容分发CDN域名...${NC}"
+    local rtls_domain
+    rtls_domain=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com" "static.wikia.nocookie.net")
+
+    echo -e "${CYAN}[INFO] 正在为 JLS 优选开发/开源更新CDN域名...${NC}"
+    local jls_domain
+    jls_domain=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "packages.mozilla.org" "registry.npmjs.org")
 
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
@@ -678,32 +698,30 @@ add_anytls_all_modes_server_config() {
     local name_rtls="anytls-restls-in-${host_name}"
     local name_jls="anytls-jls-in-${host_name}"
 
-    # 写入总账本记录
+    # 写入总账本记录（动态写入优选后的独立伪装域名）
     local rec_std="TYPE=anytls|MODE=standard|NAME=${name_std}|PORT=${p_std}|USER=${u_std}|PASS=${pass_std}|IP=${server_ip}"
-    local rec_stls="TYPE=anytls|MODE=shadowtls|NAME=${name_stls}|PORT=${p_stls}|USER=${u_stls}|PASS=${pass_stls}|IP=${server_ip}"
-    local rec_rtls="TYPE=anytls|MODE=restls|NAME=${name_rtls}|PORT=${p_rtls}|USER=${u_rtls}|PASS=${pass_rtls}|IP=${server_ip}"
-    local rec_jls="TYPE=anytls|MODE=jls|NAME=${name_jls}|PORT=${p_jls}|USER=${u_jls}|PASS=${pass_jls}|IP=${server_ip}"
+    local rec_stls="TYPE=anytls|MODE=shadowtls|NAME=${name_stls}|PORT=${p_stls}|USER=${u_stls}|PASS=${pass_stls}|DEST=${stls_domain}:443|IP=${server_ip}"
+    local rec_rtls="TYPE=anytls|MODE=restls|NAME=${name_rtls}|PORT=${p_rtls}|USER=${u_rtls}|PASS=${pass_rtls}|DEST=${rtls_domain}:443|IP=${server_ip}"
+    local rec_jls="TYPE=anytls|MODE=jls|NAME=${name_jls}|PORT=${p_jls}|USER=${u_jls}|PASS=${pass_jls}|DEST=${jls_domain}:443|SNI=${jls_domain}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" \
         "$name_std" "$p_std" "$u_std" "$pass_std" "$cert_file" "$key_file" "$rec_std" \
-        "$name_stls" "$p_stls" "$u_stls" "$pass_stls" "$rec_stls" \
-        "$name_rtls" "$p_rtls" "$u_rtls" "$pass_rtls" "$rec_rtls" \
-        "$name_jls" "$p_jls" "$u_jls" "$pass_jls" "$rec_jls" << 'PY_EOF'
+        "$name_stls" "$p_stls" "$u_stls" "$pass_stls" "$stls_domain" "$rec_stls" \
+        "$name_rtls" "$p_rtls" "$u_rtls" "$pass_rtls" "$rtls_domain" "$rec_rtls" \
+        "$name_jls" "$p_jls" "$u_jls" "$pass_jls" "$jls_domain" "$rec_jls" << 'PY_EOF'
 import sys, os, yaml
 args = sys.argv[1:]
 config_path = args[0]
 nodes_db = args[1]
 
-# 提取参数
 n_std, p_std, u_std, pw_std, crt, key, rec_std = args[2:9]
-n_stls, p_stls, u_stls, pw_stls, rec_stls = args[9:14]
-n_rtls, p_rtls, u_rtls, pw_rtls, rec_rtls = args[14:19]
-n_jls, p_jls, u_jls, pw_jls, rec_jls = args[19:24]
+n_stls, p_stls, u_stls, pw_stls, d_stls, rec_stls = args[9:15]
+n_rtls, p_rtls, u_rtls, pw_rtls, d_rtls, rec_rtls = args[15:21]
+n_jls, p_jls, u_jls, pw_jls, d_jls, rec_jls = args[21:27]
 
 anytls_names = {n_std, n_stls, n_rtls, n_jls}
 new_records = [rec_std, rec_stls, rec_rtls, rec_jls]
 
-# 更新总账本
 existing = []
 if os.path.exists(nodes_db):
     with open(nodes_db, encoding="utf-8") as f:
@@ -717,7 +735,6 @@ existing.extend(new_records)
 with open(nodes_db, "w", encoding="utf-8") as f:
     f.write("\n".join(existing) + "\n")
 
-# 加载并更新 config.yaml 中的 listeners
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -726,40 +743,40 @@ if os.path.exists(config_path):
             listeners = [l for l in loaded["listeners"] if l.get("name") not in anytls_names]
     except: pass
 
-# 1. Standard TLS Mode
+# 1. Standard TLS Mode (自签证书)
 listeners.append({
     "name": n_std, "type": "anytls", "port": int(p_std), "listen": "0.0.0.0",
     "users": {u_std: pw_std}, "certificate": crt, "private-key": key
 })
 
-# 2. Shadow-TLS v3 Mode
+# 2. Shadow-TLS v3 Mode (硬件/驱动分发 CDN)
 listeners.append({
     "name": n_stls, "type": "anytls", "port": int(p_stls), "listen": "0.0.0.0",
     "users": {u_stls: pw_stls},
     "shadow-tls": {
         "enable": True, "version": 3,
         "users": [{"name": u_stls, "password": pw_stls}],
-        "handshake": {"dest": "microsoft.com:443"}
+        "handshake": {"dest": f"{d_stls}:443"}
     }
 })
 
-# 3. ResTLS Mode
+# 3. ResTLS Mode (游戏/内容静态资源 CDN)
 listeners.append({
     "name": n_rtls, "type": "anytls", "port": int(p_rtls), "listen": "0.0.0.0",
     "users": {u_rtls: pw_rtls},
     "res-tls": {
-        "enable": True, "dest": "microsoft.com:443", "password": pw_rtls
+        "enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls
     }
 })
 
-# 4. JLS Mode
+# 4. JLS Mode (开源/工具官方更新 CDN)
 listeners.append({
     "name": n_jls, "type": "anytls", "port": int(p_jls), "listen": "0.0.0.0",
     "users": {u_jls: pw_jls},
     "jls-config": {
         "enable": True,
         "users": [{"username": u_jls, "password": pw_jls}],
-        "dest": "microsoft.com:443", "sni": "microsoft.com"
+        "dest": f"{d_jls}:443", "sni": d_jls
     }
 })
 
@@ -770,10 +787,10 @@ PY_EOF
 
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置已全部写入并重启！${NC}"
-    echo -e " 1. Standard 模式 TCP 端口 : ${YELLOW}${p_std}${NC} (证书: anytls.crt)"
-    echo -e " 2. Shadow-TLS TCP 端口   : ${YELLOW}${p_stls}${NC} (v3 核心防主动探测)"
-    echo -e " 3. ResTLS 模式 TCP 端口   : ${YELLOW}${p_rtls}${NC} (浏览器特征模拟)"
-    echo -e " 4. JLS 模式 TCP 端口      : ${YELLOW}${p_jls}${NC} (垃圾数据长度混淆)"
+    echo -e " 1. Standard 模式 TCP 端口 : ${YELLOW}${p_std}${NC} (本地自签证书: anytls.crt)"
+    echo -e " 2. Shadow-TLS TCP 端口   : ${YELLOW}${p_stls}${NC} (优选伪装: ${stls_domain})"
+    echo -e " 3. ResTLS 模式 TCP 端口   : ${YELLOW}${p_rtls}${NC} (优选伪装: ${rtls_domain})"
+    echo -e " 4. JLS 模式 TCP 端口      : ${YELLOW}${p_jls}${NC} (优选伪装: ${jls_domain})"
 }
 
 show_menu() {
