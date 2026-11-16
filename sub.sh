@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（客户端严格从账本动态直读服务端真实伪装域名）
+# Description: 本地订阅分发守护进程（AnyTLS 标准链接仅保留密码认证）
 # ==============================================================================
 
 RED="\033[31m"
@@ -259,14 +259,12 @@ if os.path.exists(nodes_db):
     congestion-controller: bbr""")
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-            # G. AnyTLS (严格从账本动态直读服务端真实域名，匹配官方 *--opts 标准)
+            # G. AnyTLS (Mihomo 4 模 vs 标准通用链接仅保留密码)
             elif node_type == "anytls":
                 name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
                 mode = parts.get("MODE", "standard")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
                 dest_raw = parts.get("DEST", "")
-                
-                # 从账本中的 DEST 提取纯域名（去掉端口 :443）
                 domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
 
                 mi_node_names.append(name)
@@ -278,10 +276,10 @@ if os.path.exists(nodes_db):
     password: "{password}"
     skip-cert-verify: true
     udp: true""")
-                    # 标准 AnyTLS 参与通用/Sing-box 订阅
+                    # 标准 AnyTLS 参与通用/Sing-box 订阅（注意：URI 仅保留 password）
                     box_node_names.append(name)
                     box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
-                    all_links.append(f"anytls://{username}:{password}@{ip}:{port_val}?mode=standard#{urllib.parse.quote(name)}")
+                    all_links.append(f"anytls://{password}@{ip}:{port_val}?mode=standard#{urllib.parse.quote(name)}")
 
                 elif mode == "shadowtls":
                     mi_proxies.append(f"""  - name: "{name}"
