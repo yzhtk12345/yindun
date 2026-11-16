@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC 与 AnyTLS 四大模式原生入站管理
+# Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
+# Description: 本地订阅分发守护进程（客户端严格从账本动态直读服务端真实伪装域名）
 # ==============================================================================
 
 RED="\033[31m"
@@ -11,78 +11,14 @@ CYAN="\033[36m"
 NC="\033[0m"
 
 CONFIG_DIR="/etc/yindun/mihomo"
-CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 NODES_DB="${CONFIG_DIR}/all_nodes.txt"
+PORT_RECORD_FILE="${CONFIG_DIR}/sub_web_port.txt"
+PID_FILE="${CONFIG_DIR}/sub_server.pid"
+PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
+SUBSCRIPTION_GENERATOR="${CONFIG_DIR}/generate_sub.py"
+TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 
-mkdir -p "${CONFIG_DIR}"
-
-check_and_install_dependencies() {
-    if ! command -v ss &>/dev/null || ! command -v openssl &>/dev/null; then
-        echo -e "${YELLOW}[INFO] 检测到系统缺少基础网络或加密工具，正在自动安装...${NC}"
-        if command -v apt-get &>/dev/null; then
-            apt-get update -y && apt-get install -y iproute2 openssl &>/dev/null
-        elif command -v yum &>/dev/null; then
-            yum install -y iproute openssl &>/dev/null
-        fi
-    fi
-}
-
-check_and_install_python() {
-    if ! command -v python3 &>/dev/null || ! python3 -c "import yaml" &>/dev/null; then
-        echo -e "${YELLOW}[INFO] 检测到系统缺少 Python 3 或 PyYAML，正在自动安装...${NC}"
-        if command -v apt-get &>/dev/null; then
-            apt-get update -y && apt-get install -y python3 python3-yaml &>/dev/null
-        elif command -v yum &>/dev/null; then
-            yum install -y python3 python3-PyYAML &>/dev/null
-        fi
-    fi
-}
-
-check_port_used() {
-    local port="$1"
-    check_and_install_dependencies
-    if ss -tuln | grep -q ":${port} "; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-get_available_port() {
-    local mode="$1"
-    local manual_port="$2"
-    local target_port=""
-
-    if [[ "$mode" == "manual" ]]; then
-        if [[ -z "$manual_port" ]]; then
-            read -p "请输入您指定的端口 [20000-60000]: " target_port >&2
-        else
-            target_port="$manual_port"
-        fi
-
-        if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
-            echo -e "${RED}[ERROR] 端口输入无效！${NC}" >&2
-            return 1
-        fi
-
-        if check_port_used "$target_port"; then
-            echo -e "${YELLOW}[WARN] 端口 ${target_port} 当前已被占用！${NC}" >&2
-            read -p "是否仍要强行使用此端口？[y/N]: " force_choice >&2
-            if [[ "$force_choice" != "y" && "$force_choice" != "Y" ]]; then
-                return 1
-            fi
-        fi
-    else
-        while true; do
-            target_port=$((RANDOM % 40001 + 20000))
-            if ! check_port_used "$target_port"; then
-                break
-            fi
-        done
-        echo -e "${GREEN}[INFO] 自动分配可用端口: ${target_port}${NC}" >&2
-    fi
-    echo "$target_port"
-}
+mkdir -p "$CONFIG_DIR"
 
 detect_firewall() {
     if systemctl is-active --quiet ufw 2>/dev/null || command -v ufw &>/dev/null; then
@@ -96,732 +32,446 @@ detect_firewall() {
     fi
 }
 
-cleanup_firewall_by_type() {
-    local target_type="$1"
+cleanup_old_sub_firewall_rules() {
     local fw_type
     fw_type=$(detect_firewall)
-    echo -e "${CYAN}[INFO] 正在清理防火墙中的旧 ${target_type} 端口规则...${NC}"
 
-    if [ -f "$NODES_DB" ]; then
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q "TYPE=${target_type}|"; then
-                local old_p
-                old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
-                if [[ -n "$old_p" ]]; then
-                    case "$fw_type" in
-                        ufw)
-                            ufw delete allow "${old_p}/tcp" >/dev/null 2>&1
-                            ufw delete allow "${old_p}/udp" >/dev/null 2>&1
-                            ;;
-                        firewalld)
-                            firewall-cmd --permanent --remove-port="${old_p}/tcp" >/dev/null 2>&1
-                            firewall-cmd --permanent --remove-port="${old_p}/udp" >/dev/null 2>&1
-                            ;;
-                        iptables)
-                            iptables -D INPUT -p tcp --dport "$old_p" -j ACCEPT 2>/dev/null || true
-                            iptables -D INPUT -p udp --dport "$old_p" -j ACCEPT 2>/dev/null || true
-                            ;;
-                    esac
-                fi
-            fi
-        done < "$NODES_DB"
-
-        case "$fw_type" in
-            ufw) ufw reload >/dev/null 2>&1 ;;
-            firewalld) firewall-cmd --reload >/dev/null 2>&1 ;;
-        esac
+    if [ -f "$PORT_RECORD_FILE" ]; then
+        local old_port
+        old_port=$(cat "$PORT_RECORD_FILE")
+        if [[ -n "$old_port" ]]; then
+            case "$fw_type" in
+                ufw) ufw delete allow "${old_port}/tcp" >/dev/null 2>&1; ufw reload >/dev/null 2>&1 ;;
+                firewalld) firewall-cmd --permanent --remove-port="${old_port}/tcp" >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1 ;;
+                iptables) iptables -D INPUT -p tcp --dport "$old_port" -j ACCEPT 2>/dev/null || true ;;
+            esac
+        fi
     fi
 }
 
 manage_firewall_port() {
-    local action="$1"
-    local port="$2"
-    local proto="$3"
-    local comment="$4"
-    local fw_type
+    local action="$1" port="$2" comment="$3" fw_type
     fw_type=$(detect_firewall)
 
-    local protos=()
-    if [[ "$proto" == "tcp/udp" || "$proto" == "both" ]]; then
-        protos=("tcp" "udp")
-    else
-        protos=("$proto")
-    fi
-
     case "$fw_type" in
-        ufw)
-            for p in "${protos[@]}"; do
-                if [[ "$action" == "add" ]]; then
-                    ufw allow "$port/$p" comment "$comment" >/dev/null 2>&1
-                    echo -e "${GREEN}[UFW] 已开放端口 ${port}/${p} (备注: ${comment})${NC}"
-                fi
-            done
-            ufw reload >/dev/null 2>&1
-            ;;
-        firewalld)
-            for p in "${protos[@]}"; do
-                if [[ "$action" == "add" ]]; then
-                    firewall-cmd --permanent --add-port="${port}/${p}" >/dev/null 2>&1
-                    echo -e "${GREEN}[Firewalld] 已永久开放端口 ${port}/${p}${NC}"
-                fi
-            done
-            firewall-cmd --reload >/dev/null 2>&1
-            ;;
-        iptables)
-            for p in "${protos[@]}"; do
-                if [[ "$action" == "add" ]]; then
-                    iptables -A INPUT -p "$p" --dport "$port" -j ACCEPT 2>/dev/null
-                    echo -e "${GREEN}[Iptables] 已开放端口 ${port}/${p}${NC}"
-                fi
-            done
-            ;;
-        *)
-            echo -e "${YELLOW}[WARN] 未检测到主流防火墙，跳过配置。${NC}"
-            ;;
+        ufw) [[ "$action" == "add" ]] && ufw allow "$port/tcp" comment "$comment" >/dev/null 2>&1 && ufw reload >/dev/null 2>&1 ;;
+        firewalld) [[ "$action" == "add" ]] && firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
+        iptables) [[ "$action" == "add" ]] && iptables -A INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null ;;
     esac
 }
 
-REALITY_CANDIDATES=(
-    "gateway.icloud.com"
-    "icloud.com"
-    "www.microsoft.com"
-    "microsoft.com"
-    "dl.google.com"
-    "speed.cloudflare.com"
-)
+check_port_used() {
+    local port="$1"
+    command -v ss &>/dev/null && ss -tuln | grep -q ":${port} " && return 0 || nc -z 127.0.0.1 "$port" &>/dev/null && return 0 || return 1
+}
 
-# 通用候选域名测速优选函数（支持传入自定义域名列表）
-select_best_domain_from_list() {
-    local fallback="$1"
-    shift
-    local candidates=("$@")
-    local best_domain="$fallback"
-    local temp_file="/tmp/yindun_custom_domain_test.log"
-    > "$temp_file"
-
-    for domain in "${candidates[@]}"; do
-        local time_cost
-        time_cost=$(curl -o /dev/null -s -w "%{time_connect}" --max-time 2 "https://${domain}" 2>/dev/null)
-        if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
-            local ms
-            ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 候选: ${domain} | 延迟: ${ms} ms" >&2
-            echo "$ms $domain" >> "$temp_file"
+get_web_port() {
+    local target_port=""
+    if [ -f "$PORT_RECORD_FILE" ]; then
+        target_port=$(cat "$PORT_RECORD_FILE")
+        if [[ "$target_port" =~ ^[0-9]+$ ]] && [ "$target_port" -ge 10000 ] && [ "$target_port" -le 20000 ]; then
+            read -p "是否需要重新生成随机端口和重置 Token？[y/N]: " reset_choice
+            if [[ "$reset_choice" =~ ^[Yy]$ ]]; then
+                cleanup_old_sub_firewall_rules
+                rm -f "$PORT_RECORD_FILE" "$TOKEN_FILE"
+                target_port=""
+            fi
         fi
+    fi
+    if [ -z "$target_port" ]; then
+        while true; do
+            target_port=$((RANDOM % 10001 + 10000))
+            ! check_port_used "$target_port" && break
+        done
+        echo "$target_port" > "$PORT_RECORD_FILE"
+    fi
+    echo "$target_port"
+}
+
+get_public_ip() {
+    local ip=""
+    for service in "https://api.ipify.org" "https://ip.sb" "https://icanhazip.com"; do
+        ip=$(curl -s4 --max-time 3 "$service" 2>/dev/null | tr -d '[:space:]')
+        [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$ip" && return 0
     done
+    echo "45.207.156.146"
+}
 
-    if [ -s "$temp_file" ]; then
-        best_domain=$(sort -n "$temp_file" | head -n 1 | awk '{print $2}')
-        echo -e "${GREEN}[SUCCESS] 已优选低延迟域名: ${best_domain}${NC}" >&2
-    else
-        echo -e "${YELLOW}[WARN] 测速超时，使用默认可用域名: ${best_domain}${NC}" >&2
+stop_daemon() {
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid=$(cat "$PID_FILE")
+        kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
+        rm -f "$PID_FILE"
     fi
-    rm -f "$temp_file"
-    echo -n "$best_domain"
 }
 
-select_best_reality_domain() {
-    echo -e "${CYAN}[INFO] 正在对候选伪装域名进行测速优选...${NC}" >&2
-    select_best_domain_from_list "gateway.icloud.com" "${REALITY_CANDIDATES[@]}"
-}
+prepare_subscription_generator() {
+    cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
+import os, urllib.parse, json
+
+config_dir = os.path.dirname(os.path.abspath(__file__))
+nodes_db = os.path.join(config_dir, "all_nodes.txt")
+all_links_path = os.path.join(config_dir, "all_links.txt")
+box_links_path = os.path.join(config_dir, "box_links.json")
+mi_links_path = os.path.join(config_dir, "mi_links.yaml")
+
+mi_proxies = []
+box_outbounds = []
+all_links = []
+mi_node_names = []
+box_node_names = []
 
-# 1. VLESS-REALITY
-add_vless_reality_server_config() {
-    check_and_install_python
-    cleanup_firewall_by_type "vless-reality"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 VLESS-REALITY 服务端入站          ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto" manual_port=""
-    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入要指定的端口 [20000-60000]: " manual_port
-
-    local port
-    port=$(get_available_port "$port_mode" "$manual_port")
-    [[ -z "$port" ]] && return 1
-
-    local uuid short_id
-    uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
-    short_id=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
-
-    local mihomo_bin="${CONFIG_DIR}/mihomo"
-    [ ! -x "$mihomo_bin" ] && echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件！${NC}" && return 1
-
-    local keypair private_key public_key
-    keypair=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
-    private_key=$(echo "$keypair" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
-    public_key=$(echo "$keypair" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
-    [[ -z "$private_key" ]] && return 1
-
-    local server_name server_ip
-    server_name=$(select_best_reality_domain)
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    manage_firewall_port "add" "$port" "tcp" "YinDun-Reality-${port}"
-    local node_name="vless-reality-vision-in-${host_name}"
-    local db_record="TYPE=vless-reality|NAME=${node_name}|PORT=${port}|UUID=${uuid}|PRIV=${private_key}|PUB=${public_key}|SHORTID=${short_id}|DOMAIN=${server_name}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$uuid" "$server_name" "$private_key" "$short_id" << 'PY_EOF'
-import sys, os, yaml
-config_path, nodes_db, node_name, port_str, db_record, uuid, server_name, priv, short_id = sys.argv[1:10]
-port = int(port_str)
-
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=vless-reality|")] if os.path.exists(nodes_db) else []
-existing.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
-
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except: pass
-
-listeners.append({
-    "name": node_name, "type": "vless", "port": port, "listen": "0.0.0.0",
-    "users": [{"username": "1", "uuid": uuid, "flow": "xtls-rprx-vision"}],
-    "reality-config": {"dest": f"{server_name}:443", "private-key": priv, "short-id": [short_id], "server-names": [server_name]}
-})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] VLESS-REALITY 服务端入站配置完成！${NC}"
-}
-
-# 2. Hysteria 2
-add_hysteria2_server_config() {
-    check_and_install_python
-    check_and_install_dependencies
-    cleanup_firewall_by_type "hysteria2"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Hysteria 2 服务端入站             ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto" manual_port=""
-    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
-
-    local port
-    port=$(get_available_port "$port_mode" "$manual_port")
-    [[ -z "$port" ]] && return 1
-
-    local hy2_password
-    hy2_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
-    local cert_dir="${CONFIG_DIR}/cert"
-    mkdir -p "$cert_dir"
-    local cert_file="${cert_dir}/hy2.crt" key_file="${cert_dir}/hy2.key" sni_domain="gateway.icloud.com"
-
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=${sni_domain}" 2>/dev/null
-    local sha256_fingerprint
-    sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
-    local node_name="hysteria2-in-${host_name}"
-    local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file" << 'PY_EOF'
-import sys, os, yaml
-config_path, nodes_db, node_name, port_str, db_record, password, cert_file, key_file = sys.argv[1:9]
-port = int(port_str)
-
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=hysteria2|")] if os.path.exists(nodes_db) else []
-existing.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
-
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except: pass
-
-listeners.append({
-    "name": node_name, "type": "hysteria2", "port": port, "listen": "0.0.0.0",
-    "users": {"1": password}, "alpn": ["h3"], "certificate": cert_file, "private-key": key_file
-})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] Hysteria 2 服务端入站配置完成！${NC}"
-}
-
-# 3. TUIC v5
-add_tuic_server_config() {
-    check_and_install_python
-    check_and_install_dependencies
-    cleanup_firewall_by_type "tuic"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 TUIC v5 服务端入站             ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto" manual_port=""
-    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
-
-    local port
-    port=$(get_available_port "$port_mode" "$manual_port")
-    [[ -z "$port" ]] && return 1
-
-    local tuic_uuid tuic_password
-    tuic_uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
-    tuic_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
-    local cert_dir="${CONFIG_DIR}/cert"
-    mkdir -p "$cert_dir"
-    local cert_file="${cert_dir}/tuic.crt" key_file="${cert_dir}/tuic.key" sni_domain="www.apple.com"
-
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=${sni_domain}" 2>/dev/null
-    local sha256_fingerprint
-    sha256_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$cert_file" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    manage_firewall_port "add" "$port" "udp" "YinDun-Tuic-${port}"
-    local node_name="tuic-in-${host_name}"
-    local db_record="TYPE=tuic|NAME=${node_name}|PORT=${port}|UUID=${tuic_uuid}|PASSWORD=${tuic_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$tuic_uuid" "$tuic_password" "$cert_file" "$key_file" << 'PY_EOF'
-import sys, os, yaml
-config_path, nodes_db, node_name, port_str, db_record, tuic_uuid, password, cert_file, key_file = sys.argv[1:10]
-port = int(port_str)
-
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=tuic|")] if os.path.exists(nodes_db) else []
-existing.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
-
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except: pass
-
-listeners.append({
-    "name": node_name, "type": "tuic", "port": port, "listen": "0.0.0.0",
-    "users": {tuic_uuid: password}, "congestion-controller": "bbr", "alpn": ["h3"],
-    "certificate": cert_file, "private-key": key_file
-})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] TUIC v5 服务端入站配置完成！${NC}"
-}
-
-# 4. Mieru (TCP & UDP)
-add_mieru_server_config() {
-    check_and_install_python
-    check_and_install_dependencies
-    cleanup_firewall_by_type "mieru-tcp"
-    cleanup_firewall_by_type "mieru-udp"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Mieru (TCP & UDP) 服务端入站     ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto" manual_tcp="" manual_udp=""
-    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "TCP 端口: " manual_tcp && read -p "UDP 端口: " manual_udp
-
-    local tcp_port udp_port
-    tcp_port=$(get_available_port "$port_mode" "$manual_tcp")
-    udp_port=$(get_available_port "$port_mode" "$manual_udp")
-    [[ -z "$tcp_port" || -z "$udp_port" ]] && return 1
-
-    local t_user="user_$(openssl rand -hex 3)" t_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
-    local u_user="user_$(openssl rand -hex 3)" u_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    manage_firewall_port "add" "$tcp_port" "tcp" "YinDun-Mieru-TCP-${tcp_port}"
-    manage_firewall_port "add" "$udp_port" "udp" "YinDun-Mieru-UDP-${udp_port}"
-
-    local t_name="mieru-tcp-in-${host_name}" u_name="mieru-udp-in-${host_name}"
-    local rec_t="TYPE=mieru-tcp|NAME=${t_name}|PORT=${tcp_port}|USER=${t_user}|PASS=${t_pass}|IP=${server_ip}"
-    local rec_u="TYPE=mieru-udp|NAME=${u_name}|PORT=${udp_port}|USER=${u_user}|PASS=${u_pass}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$t_name" "$tcp_port" "$t_user" "$t_pass" "$u_name" "$udp_port" "$u_user" "$u_pass" "$rec_t" "$rec_u" << 'PY_EOF'
-import sys, os, yaml
-config_path, nodes_db, t_name, t_port_s, t_user, t_pass, u_name, u_port_s, u_user, u_pass, rec_t, rec_u = sys.argv[1:13]
-t_port, u_port = int(t_port_s), int(u_port_s)
-
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=mieru-tcp|") and not l.startswith("TYPE=mieru-udp|")] if os.path.exists(nodes_db) else []
-existing.extend([rec_t, rec_u])
-with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
-
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") not in [t_name, u_name]]
-    except: pass
-
-listeners.append({"name": t_name, "type": "mieru", "port": t_port, "listen": "0.0.0.0", "transport": "TCP", "users": {t_user: t_pass}})
-listeners.append({"name": u_name, "type": "mieru", "port": u_port, "listen": "0.0.0.0", "transport": "UDP", "users": {u_user: u_pass}})
-
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] Mieru (TCP & UDP) 服务端入站配置完成！${NC}"
-}
-
-# 5. Snell v6 (Mihomo 原生入站 v6)
-add_snell_server_config() {
-    check_and_install_python
-    check_and_install_dependencies
-    cleanup_firewall_by_type "snell"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Snell v6 (原生入站) 服务端        ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto" manual_port=""
-    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入端口: " manual_port
-
-    local port
-    port=$(get_available_port "$port_mode" "$manual_port")
-    [[ -z "$port" ]] && return 1
-
-    read -p "请选择 Snell v6 模式 [1. default (抗封锁流量塑形) 2. unshaped (极致吞吐性能)] (默认 1): " mode_choice
-    local snell_mode="default"
-    [[ "$mode_choice" == "2" ]] && snell_mode="unshaped"
-
-    local snell_psk
-    snell_psk=$(openssl rand -hex 16 2>/dev/null | tr -d '\r\n')
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    manage_firewall_port "add" "$port" "tcp" "YinDun-Snell-${port}"
-    local node_name="snell-in-${host_name}"
-    local db_record="TYPE=snell|NAME=${node_name}|PORT=${port}|PSK=${snell_psk}|VERSION=6|MODE=${snell_mode}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$snell_psk" "$snell_mode" "$db_record" << 'PY_EOF'
-import sys, os, yaml
-config_path, nodes_db, node_name, port_str, psk, mode, db_record = sys.argv[1:8]
-port = int(port_str)
-
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=snell|")] if os.path.exists(nodes_db) else []
-existing.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
-
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except: pass
-
-listeners.append({
-    "name": node_name,
-    "type": "snell",
-    "port": port,
-    "listen": "0.0.0.0",
-    "psk": psk,
-    "version": 6,
-    "udp": True,
-    "mode": mode
-})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] Snell v6 原生入站配置已写入并重启！${NC}"
-    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口 : ${YELLOW}${port} (TCP)${NC}"
-    echo -e "PSK 密码 : ${YELLOW}${snell_psk}${NC}"
-    echo -e "协议版本 : ${YELLOW}v6 (UDP over TCP)${NC}"
-    echo -e "运行模式 : ${YELLOW}${snell_mode}${NC}"
-}
-
-# 6. ShadowQUIC
-add_shadowquic_server_config() {
-    check_and_install_python
-    check_and_install_dependencies
-    cleanup_firewall_by_type "shadowquic"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 ShadowQUIC 服务端入站             ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
-    local port_mode="auto" manual_port=""
-    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
-
-    local port
-    port=$(get_available_port "$port_mode" "$manual_port")
-    [[ -z "$port" ]] && return 1
-
-    local sq_user="user_$(openssl rand -hex 3)"
-    local sq_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
-    local best_domain
-    best_domain=$(select_best_reality_domain)
-    local jls_addr="${best_domain}:443"
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    manage_firewall_port "add" "$port" "udp" "YinDun-ShadowQUIC-${port}"
-    local node_name="shadowquic-in-${host_name}"
-    local db_record="TYPE=shadowquic|NAME=${node_name}|PORT=${port}|USER=${sq_user}|PASS=${sq_pass}|JLS=${jls_addr}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$sq_user" "$sq_pass" "$jls_addr" "$db_record" << 'PY_EOF'
-import sys, os, yaml
-config_path, nodes_db, node_name, port_str, user, passwd, jls, db_record = sys.argv[1:9]
-port = int(port_str)
-
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=shadowquic|")] if os.path.exists(nodes_db) else []
-existing.append(db_record)
-with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
-
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
-    except: pass
-
-listeners.append({
-    "name": node_name,
-    "type": "shadowquic",
-    "port": port,
-    "listen": "0.0.0.0",
-    "users": [{"username": user, "password": passwd}],
-    "jls-upstream": {"addr": jls},
-    "congestion-controller": "bbr"
-})
-
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] ShadowQUIC 服务端入站配置已写入并重启！${NC}"
-    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口 : ${YELLOW}${port} (UDP)${NC}"
-    echo -e "认证账号 : ${YELLOW}${sq_user}${NC}"
-    echo -e "认证密码 : ${YELLOW}${sq_pass}${NC}"
-    echo -e "JLS 伪装 : ${YELLOW}${jls_addr}${NC}"
-}
-
-# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS) - 独立低调高权重域名优选版
-add_anytls_all_modes_server_config() {
-    check_and_install_python
-    check_and_install_dependencies
-    cleanup_firewall_by_type "anytls"
-    local host_name
-    host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}  开始配置并写入 AnyTLS 四大模式服务端入站 (智能优选伪装)  ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
-    # 1. 准备标准模式专属简洁自签证书 (anytls.crt / anytls.key) 放在 /etc/yindun/mihomo/cert/
-    local cert_dir="${CONFIG_DIR}/cert"
-    mkdir -p "$cert_dir"
-    local cert_file="${cert_dir}/anytls.crt"
-    local key_file="${cert_dir}/anytls.key"
-    if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        echo -e "${CYAN}[INFO] 正在生成 AnyTLS 简洁自签证书 (anytls.crt / anytls.key)...${NC}"
-        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=download.nvidia.com" 2>/dev/null
-    fi
-
-    # 2. 为三个高级模式分别测速优选不撞脸的高可用 CDN/软件分发域名
-    echo -e "${CYAN}[INFO] 正在为 Shadow-TLS 优选驱动/硬件CDN域名...${NC}"
-    local stls_domain
-    stls_domain=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com" "downloads.dell.com")
-
-    echo -e "${CYAN}[INFO] 正在为 ResTLS 优选游戏/内容分发CDN域名...${NC}"
-    local rtls_domain
-    rtls_domain=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com" "static.wikia.nocookie.net")
-
-    echo -e "${CYAN}[INFO] 正在为 JLS 优选开发/开源更新CDN域名...${NC}"
-    local jls_domain
-    jls_domain=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "packages.mozilla.org" "registry.npmjs.org")
-
-    local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
-
-    # 动态获取 4 个可用端口
-    echo -e "${CYAN}[INFO] 正在为 4 种 AnyTLS 模式自动分配端口...${NC}"
-    local p_std p_stls p_rtls p_jls
-    p_std=$(get_available_port "auto" "")
-    p_stls=$(get_available_port "auto" "")
-    p_rtls=$(get_available_port "auto" "")
-    p_jls=$(get_available_port "auto" "")
-
-    # 仅放行 TCP 端口（标准 TLS 规范）
-    manage_firewall_port "add" "$p_std" "tcp" "YinDun-AnyTLS-Standard-${p_std}"
-    manage_firewall_port "add" "$p_stls" "tcp" "YinDun-AnyTLS-ShadowTLS-${p_stls}"
-    manage_firewall_port "add" "$p_rtls" "tcp" "YinDun-AnyTLS-ResTLS-${p_rtls}"
-    manage_firewall_port "add" "$p_jls" "tcp" "YinDun-AnyTLS-JLS-${p_jls}"
-
-    # 生成各模式账号密码
-    local u_std="user_$(openssl rand -hex 3)" pass_std="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
-    local u_stls="user_$(openssl rand -hex 3)" pass_stls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
-    local u_rtls="user_$(openssl rand -hex 3)" pass_rtls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
-    local u_jls="user_$(openssl rand -hex 3)" pass_jls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
-
-    local name_std="anytls-standard-in-${host_name}"
-    local name_stls="anytls-shadowtls-in-${host_name}"
-    local name_rtls="anytls-restls-in-${host_name}"
-    local name_jls="anytls-jls-in-${host_name}"
-
-    # 写入总账本记录（动态写入优选后的独立伪装域名）
-    local rec_std="TYPE=anytls|MODE=standard|NAME=${name_std}|PORT=${p_std}|USER=${u_std}|PASS=${pass_std}|IP=${server_ip}"
-    local rec_stls="TYPE=anytls|MODE=shadowtls|NAME=${name_stls}|PORT=${p_stls}|USER=${u_stls}|PASS=${pass_stls}|DEST=${stls_domain}:443|IP=${server_ip}"
-    local rec_rtls="TYPE=anytls|MODE=restls|NAME=${name_rtls}|PORT=${p_rtls}|USER=${u_rtls}|PASS=${pass_rtls}|DEST=${rtls_domain}:443|IP=${server_ip}"
-    local rec_jls="TYPE=anytls|MODE=jls|NAME=${name_jls}|PORT=${p_jls}|USER=${u_jls}|PASS=${pass_jls}|DEST=${jls_domain}:443|SNI=${jls_domain}|IP=${server_ip}"
-
-    python3 - "$CONFIG_FILE" "$NODES_DB" \
-        "$name_std" "$p_std" "$u_std" "$pass_std" "$cert_file" "$key_file" "$rec_std" \
-        "$name_stls" "$p_stls" "$u_stls" "$pass_stls" "$stls_domain" "$rec_stls" \
-        "$name_rtls" "$p_rtls" "$u_rtls" "$pass_rtls" "$rtls_domain" "$rec_rtls" \
-        "$name_jls" "$p_jls" "$u_jls" "$pass_jls" "$jls_domain" "$rec_jls" << 'PY_EOF'
-import sys, os, yaml
-args = sys.argv[1:]
-config_path = args[0]
-nodes_db = args[1]
-
-n_std, p_std, u_std, pw_std, crt, key, rec_std = args[2:9]
-n_stls, p_stls, u_stls, pw_stls, d_stls, rec_stls = args[9:15]
-n_rtls, p_rtls, u_rtls, pw_rtls, d_rtls, rec_rtls = args[15:21]
-n_jls, p_jls, u_jls, pw_jls, d_jls, rec_jls = args[21:27]
-
-anytls_names = {n_std, n_stls, n_rtls, n_jls}
-new_records = [rec_std, rec_stls, rec_rtls, rec_jls]
-
-existing = []
 if os.path.exists(nodes_db):
-    with open(nodes_db, encoding="utf-8") as f:
+    with open(nodes_db, "r", encoding="utf-8") as f:
         for line in f:
-            l = line.strip()
-            if not l: continue
-            if "TYPE=anytls" in l:
-                continue
-            existing.append(l)
-existing.extend(new_records)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing) + "\n")
+            line = line.strip()
+            if not line: continue
+            
+            parts = {k: v for item in line.split("|") if "=" in item for k, v in [item.split("=", 1)]}
+            node_type = parts.get("TYPE")
 
-listeners = []
-if os.path.exists(config_path):
-    try:
-        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
-        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") not in anytls_names]
-    except: pass
+            # A. VLESS-REALITY
+            if node_type == "vless-reality":
+                name = parts.get("NAME", "node").replace("-in-", "-out-")
+                ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
+                mi_node_names.append(name)
+                box_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    servername: {domain}
+    reality-opts:
+      public-key: {pub}
+      short-id: {shortid}
+      support-x25519mlkem768: false""")
+                box_outbounds.append({"type": "vless", "tag": name, "server": ip, "server_port": int(port_val), "uuid": uuid, "flow": "xtls-rprx-vision", "tls": {"enabled": True, "server_name": domain, "utls": {"enabled": True, "fingerprint": "chrome"}, "reality": {"enabled": True, "public_key": pub, "short_id": shortid}}})
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{urllib.parse.quote(name)}")
 
-# 1. Standard TLS Mode (自签证书)
-listeners.append({
-    "name": n_std, "type": "anytls", "port": int(p_std), "listen": "0.0.0.0",
-    "users": {u_std: pw_std}, "certificate": crt, "private-key": key
-})
+            # B. Hysteria 2
+            elif node_type == "hysteria2":
+                name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
+                ip, port_val, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "gateway.icloud.com")
+                mi_node_names.append(name)
+                box_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: hysteria2
+    server: {ip}
+    port: {port_val}
+    password: {password}
+    sni: {sni}
+    skip-cert-verify: false
+    fingerprint: {fingerprint}
+    alpn:
+      - h3""")
+                box_outbounds.append({"type": "hysteria2", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}})
+                all_links.append(f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{urllib.parse.quote(name)}")
 
-# 2. Shadow-TLS v3 Mode (硬件/驱动分发 CDN)
-listeners.append({
-    "name": n_stls, "type": "anytls", "port": int(p_stls), "listen": "0.0.0.0",
-    "users": {u_stls: pw_stls},
-    "shadow-tls": {
-        "enable": True, "version": 3,
-        "users": [{"name": u_stls, "password": pw_stls}],
-        "handshake": {"dest": f"{d_stls}:443"}
-    }
-})
+            # C. TUIC v5
+            elif node_type == "tuic":
+                name = parts.get("NAME", "tuic-node").replace("-in-", "-out-")
+                ip, port_val, tuic_uuid, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "www.apple.com")
+                mi_node_names.append(name)
+                box_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: tuic
+    server: {ip}
+    port: {port_val}
+    uuid: {tuic_uuid}
+    password: {password}
+    sni: {sni}
+    skip-cert-verify: false
+    fingerprint: {fingerprint}
+    congestion-controller: bbr
+    alpn:
+      - h3""")
+                box_outbounds.append({"type": "tuic", "tag": name, "server": ip, "server_port": int(port_val), "uuid": tuic_uuid, "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}, "congestion_control": "bbr"})
+                all_links.append(f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{urllib.parse.quote(name)}")
 
-# 3. ResTLS Mode (游戏/内容静态资源 CDN)
-listeners.append({
-    "name": n_rtls, "type": "anytls", "port": int(p_rtls), "listen": "0.0.0.0",
-    "users": {u_rtls: pw_rtls},
-    "res-tls": {
-        "enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls
-    }
-})
+            # D. Mieru TCP / UDP
+            elif node_type in ["mieru-tcp", "mieru-udp"]:
+                name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
+                ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                transport_type = "TCP" if node_type == "mieru-tcp" else "UDP"
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: mieru
+    server: {ip}
+    port: {port_val}
+    username: {username}
+    password: {password}
+    transport: {transport_type}""")
+                all_links.append(f"mierus://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?profile={urllib.parse.quote(name)}&port={port_val}&protocol={transport_type}#{urllib.parse.quote(name)}")
 
-# 4. JLS Mode (开源/工具官方更新 CDN)
-listeners.append({
-    "name": n_jls, "type": "anytls", "port": int(p_jls), "listen": "0.0.0.0",
-    "users": {u_jls: pw_jls},
-    "jls-config": {
-        "enable": True,
-        "users": [{"username": u_jls, "password": pw_jls}],
-        "dest": f"{d_jls}:443", "sni": d_jls
-    }
-})
+            # E. Snell v6
+            elif node_type == "snell":
+                name = parts.get("NAME", "snell-node").replace("-in-", "-out-")
+                ip, port_val, psk = parts.get("IP"), parts.get("PORT"), parts.get("PSK")
+                v_version = int(parts.get("VERSION", "6"))
+                v_mode = parts.get("MODE", "default")
+                mi_node_names.append(name)
+                box_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: snell
+    server: {ip}
+    port: {port_val}
+    psk: {psk}
+    version: {v_version}
+    udp: true
+    mode: {v_mode}""")
+                box_outbounds.append({
+                    "type": "snell",
+                    "tag": name,
+                    "server": ip,
+                    "server_port": int(port_val),
+                    "version": v_version,
+                    "psk": psk,
+                    "mode": v_mode
+                })
+                all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
-os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
-PY_EOF
+            # F. ShadowQUIC
+            elif node_type == "shadowquic":
+                name = parts.get("NAME", "shadowquic-node").replace("-in-", "-out-")
+                ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                jls_addr = parts.get("JLS", "download.nvidia.com:443")
+                sni_domain = jls_addr.split(":")[0] if ":" in jls_addr else jls_addr
+                
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: shadowquic
+    server: {ip}
+    port: {port_val}
+    username: {username}
+    password: {password}
+    sni: {sni_domain}
+    alpn:
+      - h3
+    quic-versions:
+      - v1
+    congestion-controller: bbr""")
+                all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-    systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置已全部写入并重启！${NC}"
-    echo -e " 1. Standard 模式 TCP 端口 : ${YELLOW}${p_std}${NC} (本地自签证书: anytls.crt)"
-    echo -e " 2. Shadow-TLS TCP 端口   : ${YELLOW}${p_stls}${NC} (优选伪装: ${stls_domain})"
-    echo -e " 3. ResTLS 模式 TCP 端口   : ${YELLOW}${p_rtls}${NC} (优选伪装: ${rtls_domain})"
-    echo -e " 4. JLS 模式 TCP 端口      : ${YELLOW}${p_jls}${NC} (优选伪装: ${jls_domain})"
+            # G. AnyTLS (严格从账本动态直读服务端真实域名，匹配官方 *--opts 标准)
+            elif node_type == "anytls":
+                name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
+                mode = parts.get("MODE", "standard")
+                ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "")
+                
+                # 从账本中的 DEST 提取纯域名（去掉端口 :443）
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+
+                mi_node_names.append(name)
+                if mode == "standard":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    skip-cert-verify: true
+    udp: true""")
+                    # 标准 AnyTLS 参与通用/Sing-box 订阅
+                    box_node_names.append(name)
+                    box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
+                    all_links.append(f"anytls://{username}:{password}@{ip}:{port_val}?mode=standard#{urllib.parse.quote(name)}")
+
+                elif mode == "shadowtls":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    sni: "{domain}"
+    udp: true
+    shadow-tls-opts:
+      version: 3
+      password: "{password}" """)
+
+                elif mode == "restls":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    sni: "{domain}"
+    udp: true
+    restls-opts:
+      password: "{password}"
+      version-hint: "tls13" """)
+
+                elif mode == "jls":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    sni: "{domain}"
+    udp: true
+    jls-opts:
+      username: "{username}"
+      password: "{password}" """)
+
+mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
+
+mihomo_full_config = f"""port: 7890
+allow-lan: true
+mode: rule
+log-level: info
+unified-delay: true
+dns:
+  enable: true 
+  listen: "0.0.0.0:1053"
+  ipv6: true
+  prefer-h3: false
+  respect-rules: true
+  use-system-hosts: false
+  cache-algorithm: "arc"
+  enhanced-mode: "fake-ip"
+  fake-ip-range: "198.18.0.1/16"
+  default-nameserver: ["223.5.5.5", "119.29.29.29"]
+  nameserver:
+    - "https://1.1.1.1/dns-query"
+    - "https://8.8.8.8/dns-query"
+  proxy-server-nameserver:
+    - "https://223.5.5.5/dns-query"
+    - "https://doh.pub/dns-query"
+
+proxies:
+""" + ("\n\n".join(mi_proxies) if mi_proxies else "") + f"""
+
+proxy-groups:
+  - name: 负载均衡
+    type: load-balance
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    strategy: round-robin
+    proxies:
+{mi_proxies_list_6}
+
+  - name: 自动选择
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+    proxies:
+{mi_proxies_list_6}
+
+  - name: 🌍选择代理节点
+    type: select
+    proxies:
+      - 负载均衡
+      - 自动选择
+      - DIRECT
+{mi_proxies_list_6}
+
+rules:
+  - GEOIP,LAN,DIRECT
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,🌍选择代理节点
+"""
+
+with open(mi_links_path, "w", encoding="utf-8") as f: f.write(mihomo_full_config)
+
+selector_outbounds = ["auto"] + box_node_names if box_node_names else ["direct"]
+auto_outbounds = box_node_names if box_node_names else ["direct"]
+
+singbox_full_config = {
+    "log": {"level": "info", "timestamp": True},
+    "inbounds": [{"type": "tun", "tag": "tun-in", "address": ["172.19.0.1/30"]}],
+    "outbounds": [
+        {"type": "selector", "tag": "proxy", "default": "auto", "outbounds": selector_outbounds},
+        {"type": "urltest", "tag": "auto", "outbounds": auto_outbounds, "url": "https://www.gstatic.com/generate_204"},
+        {"type": "direct", "tag": "direct"}
+    ] + box_outbounds,
+    "route": {"final": "proxy"}
 }
 
-show_menu() {
-    clear
-    echo -e "${CYAN}========================================================${NC}"
-    echo -e "${GREEN}        YinDun Server Node Configuration Menu          ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-    echo "1. 添加 VLESS-REALITY 服务端节点"
-    echo "2. 添加 Hysteria 2 服务端节点 (自签证书 + SHA-256 指纹)"
-    echo "3. 添加 TUIC v5 服务端节点 (自签证书 + BBR + SNI 隔离)"
-    echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
-    echo "5. 添加 Snell v6 (Mihomo 原生入站) 服务端节点"
-    echo "6. 添加 ShadowQUIC 服务端节点 (优选 JLS 伪装 + BBR)"
-    echo "7. 添加 AnyTLS 四大模式服务端节点 (Standard / Shadow-TLS / ResTLS / JLS)"
-    echo "0. 退出脚本"
-    echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-7]: " choice
+with open(box_links_path, "w", encoding="utf-8") as f: json.dump(singbox_full_config, f, indent=2, ensure_ascii=False)
+with open(all_links_path, "w", encoding="utf-8") as f: f.write("\n".join(all_links) + "\n")
+EOF
+}
 
-    case "$choice" in
-        1) add_vless_reality_server_config ;;
-        2) add_hysteria2_server_config ;;
-        3) add_tuic_server_config ;;
-        4) add_mieru_server_config ;;
-        5) add_snell_server_config ;;
-        6) add_shadowquic_server_config ;;
-        7) add_anytls_all_modes_server_config ;;
-        0) exit 0 ;;
-        *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
-    esac
+prepare_python_server() {
+    cat << 'EOF' > "$PYTHON_SERVER_FILE"
+import http.server, urllib.parse, sys, os, base64
+
+port, token, config_dir = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+class MultiSubHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        if params.get("token", [""])[0] != token:
+            self.send_response(403); self.end_headers(); self.wfile.write(b"Access Denied"); return
+
+        if parsed.path in ["/", "/all"]:
+            self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "all_links.txt")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(base64.b64encode(f.read()))
+        elif parsed.path == "/raw":
+            self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "all_links.txt")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(f.read())
+        elif parsed.path == "/box":
+            self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "box_links.json")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(f.read())
+        elif parsed.path == "/mi":
+            self.send_response(200); self.send_header("Content-Type", "text/yaml; charset=utf-8"); self.end_headers()
+            f_path = os.path.join(config_dir, "mi_links.yaml")
+            if os.path.exists(f_path):
+                with open(f_path, "rb") as f: self.wfile.write(f.read())
+        else:
+            self.send_response(404); self.end_headers(); self.wfile.write(b"Not Found")
+
+    def log_message(self, format, *args): pass
+
+http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler).serve_forever()
+EOF
+}
+
+start_daemon() {
+    [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
+    stop_daemon
+    [ ! -f "$TOKEN_FILE" ] && openssl rand -hex 32 > "$TOKEN_FILE"
+
+    local web_port
+    web_port=$(get_web_port | grep -oE '[0-9]+' | tail -n 1)
+    SUB_TOKEN=$(cat "$TOKEN_FILE")
+
+    prepare_subscription_generator
+    python3 "$SUBSCRIPTION_GENERATOR"
+    prepare_python_server
+    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
+    local server_ip
+    server_ip=$(get_public_ip)
+
+    cd "${CONFIG_DIR}" || exit
+    nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
+    echo $! > "$PID_FILE"
+
+    echo -e "\n${GREEN}========================================================${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
+    echo -e "${GREEN}========================================================${NC}"
+    echo -e "1. Base64 聚合订阅 (通用/Clash): ${CYAN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
+    echo -e "2. 明文链接列表 (Raw Links)   : ${CYAN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
+    echo -e "3. Mihomo 原生完整 YAML 配置  : ${CYAN}http://${server_ip}:${web_port}/mi?token=${SUB_TOKEN}${NC}"
+    echo -e "4. Sing-box 客户端 JSON 配置  : ${CYAN}http://${server_ip}:${web_port}/box?token=${SUB_TOKEN}${NC}"
+    echo -e "${GREEN}========================================================${NC}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    show_menu
+    start_daemon
 fi
