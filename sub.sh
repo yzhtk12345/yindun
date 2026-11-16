@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已全面集成 Sing-box Snell v6 出站支持）
+# Description: 本地订阅分发守护进程（全面支持 VLESS-REALITY、Hy2、TUIC、Mieru、Snell v6 与 ShadowQUIC）
 # ==============================================================================
 
 RED="\033[31m"
@@ -119,7 +119,8 @@ mi_links_path = os.path.join(config_dir, "mi_links.yaml")
 mi_proxies = []
 box_outbounds = []
 all_links = []
-node_names = []
+mi_node_names = []
+box_node_names = []
 
 if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
@@ -134,7 +135,8 @@ if os.path.exists(nodes_db):
             if node_type == "vless-reality":
                 name = parts.get("NAME", "node").replace("-in-", "-out-")
                 ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
-                node_names.append(name)
+                mi_node_names.append(name)
+                box_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: vless
     server: {ip}
@@ -157,7 +159,8 @@ if os.path.exists(nodes_db):
             elif node_type == "hysteria2":
                 name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
                 ip, port_val, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "gateway.icloud.com")
-                node_names.append(name)
+                mi_node_names.append(name)
+                box_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: hysteria2
     server: {ip}
@@ -175,7 +178,8 @@ if os.path.exists(nodes_db):
             elif node_type == "tuic":
                 name = parts.get("NAME", "tuic-node").replace("-in-", "-out-")
                 ip, port_val, tuic_uuid, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "www.apple.com")
-                node_names.append(name)
+                mi_node_names.append(name)
+                box_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: tuic
     server: {ip}
@@ -191,12 +195,12 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "tuic", "tag": name, "server": ip, "server_port": int(port_val), "uuid": tuic_uuid, "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}, "congestion_control": "bbr"})
                 all_links.append(f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{urllib.parse.quote(name)}")
 
-            # D. Mieru TCP / UDP
+            # D. Mieru TCP / UDP (Sing-box 不支持，仅生成 Mihomo 与通用链接)
             elif node_type in ["mieru-tcp", "mieru-udp"]:
                 name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
                 transport_type = "TCP" if node_type == "mieru-tcp" else "UDP"
-                node_names.append(name)
+                mi_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: mieru
     server: {ip}
@@ -206,13 +210,14 @@ if os.path.exists(nodes_db):
     transport: {transport_type}""")
                 all_links.append(f"mierus://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?profile={urllib.parse.quote(name)}&port={port_val}&protocol={transport_type}#{urllib.parse.quote(name)}")
 
-            # E. Snell v6 (同时支持 Mihomo 与 Sing-box v1.14+ 原生出站)
+            # E. Snell v6 (同时支持 Mihomo 与 Sing-box 原生出站)
             elif node_type == "snell":
                 name = parts.get("NAME", "snell-node").replace("-in-", "-out-")
                 ip, port_val, psk = parts.get("IP"), parts.get("PORT"), parts.get("PSK")
                 v_version = int(parts.get("VERSION", "6"))
                 v_mode = parts.get("MODE", "default")
-                node_names.append(name)
+                mi_node_names.append(name)
+                box_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: snell
     server: {ip}
@@ -232,7 +237,25 @@ if os.path.exists(nodes_db):
                 })
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
-proxies_list_6 = "\n".join([f'      - "{n}"' for n in node_names]) if node_names else '      - "DIRECT"'
+            # F. ShadowQUIC (Mihomo 原生支持，自动跳过 Sing-box 防止解析报错)
+            elif node_type == "shadowquic":
+                name = parts.get("NAME", "shadowquic-node").replace("-in-", "-out-")
+                ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: shadowquic
+    server: {ip}
+    port: {port_val}
+    username: {username}
+    password: {password}
+    alpn:
+      - h3
+    quic-versions:
+      - v1
+    congestion-controller: bbr""")
+                all_links.append(f"shadowquic://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?alpn=h3&quic-versions=v1&congestion-controller=bbr#{urllib.parse.quote(name)}")
+
+mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
 mihomo_full_config = f"""port: 7890
 allow-lan: true
@@ -267,7 +290,7 @@ proxy-groups:
     interval: 300
     strategy: round-robin
     proxies:
-{proxies_list_6}
+{mi_proxies_list_6}
 
   - name: 自动选择
     type: url-test
@@ -275,7 +298,7 @@ proxy-groups:
     interval: 300
     tolerance: 50
     proxies:
-{proxies_list_6}
+{mi_proxies_list_6}
 
   - name: 🌍选择代理节点
     type: select
@@ -283,7 +306,7 @@ proxy-groups:
       - 负载均衡
       - 自动选择
       - DIRECT
-{proxies_list_6}
+{mi_proxies_list_6}
 
 rules:
   - GEOIP,LAN,DIRECT
@@ -294,8 +317,8 @@ rules:
 
 with open(mi_links_path, "w", encoding="utf-8") as f: f.write(mihomo_full_config)
 
-selector_outbounds = ["auto"] + node_names if node_names else ["direct"]
-auto_outbounds = node_names if node_names else ["direct"]
+selector_outbounds = ["auto"] + box_node_names if box_node_names else ["direct"]
+auto_outbounds = box_node_names if box_node_names else ["direct"]
 
 singbox_full_config = {
     "log": {"level": "info", "timestamp": True},
