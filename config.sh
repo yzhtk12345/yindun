@@ -628,7 +628,7 @@ PY_EOF
     echo -e "JLS 伪装 : ${YELLOW}${jls_addr}${NC}"
 }
 
-# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS)
+# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS) - 纯 TCP 端口
 add_anytls_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -640,7 +640,7 @@ add_anytls_all_modes_server_config() {
     echo -e "${CYAN}        开始配置并写入 AnyTLS 四大模式服务端入站       ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    # 1. 准备标准模式专属简洁自签证书 (anytls.crt / anytls.key)
+    # 1. 准备标准模式专属简洁自签证书 (anytls.crt / anytls.key) 放在 /etc/yindun/mihomo/cert/
     local cert_dir="${CONFIG_DIR}/cert"
     mkdir -p "$cert_dir"
     local cert_file="${cert_dir}/anytls.crt"
@@ -661,11 +661,11 @@ add_anytls_all_modes_server_config() {
     p_rtls=$(get_available_port "auto" "")
     p_jls=$(get_available_port "auto" "")
 
-    # 放行防火墙端口 (TCP/UDP 双协议)
-    manage_firewall_port "add" "$p_std" "both" "YinDun-AnyTLS-Standard-${p_std}"
-    manage_firewall_port "add" "$p_stls" "both" "YinDun-AnyTLS-ShadowTLS-${p_stls}"
-    manage_firewall_port "add" "$p_rtls" "both" "YinDun-AnyTLS-ResTLS-${p_rtls}"
-    manage_firewall_port "add" "$p_jls" "both" "YinDun-AnyTLS-JLS-${p_jls}"
+    # 仅放行 TCP 端口（标准 TLS 规范）
+    manage_firewall_port "add" "$p_std" "tcp" "YinDun-AnyTLS-Standard-${p_std}"
+    manage_firewall_port "add" "$p_stls" "tcp" "YinDun-AnyTLS-ShadowTLS-${p_stls}"
+    manage_firewall_port "add" "$p_rtls" "tcp" "YinDun-AnyTLS-ResTLS-${p_rtls}"
+    manage_firewall_port "add" "$p_jls" "tcp" "YinDun-AnyTLS-JLS-${p_jls}"
 
     # 生成各模式账号密码
     local u_std="user_$(openssl rand -hex 3)" pass_std="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
@@ -710,7 +710,6 @@ if os.path.exists(nodes_db):
         for line in f:
             l = line.strip()
             if not l: continue
-            # 过滤掉旧的anytls记录
             if "TYPE=anytls" in l:
                 continue
             existing.append(l)
@@ -771,10 +770,10 @@ PY_EOF
 
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置已全部写入并重启！${NC}"
-    echo -e " 1. Standard 模式端口 : ${YELLOW}${p_std}${NC} (证书: anytls.crt)"
-    echo -e " 2. Shadow-TLS 端口   : ${YELLOW}${p_stls}${NC} (v3 核心防主动探测)"
-    echo -e " 3. ResTLS 模式端口   : ${YELLOW}${p_rtls}${NC} (浏览器特征模拟)"
-    echo -e " 4. JLS 填充模式端口  : ${YELLOW}${p_jls}${NC} (垃圾数据长度混淆)"
+    echo -e " 1. Standard 模式 TCP 端口 : ${YELLOW}${p_std}${NC} (证书: anytls.crt)"
+    echo -e " 2. Shadow-TLS TCP 端口   : ${YELLOW}${p_stls}${NC} (v3 核心防主动探测)"
+    echo -e " 3. ResTLS 模式 TCP 端口   : ${YELLOW}${p_rtls}${NC} (浏览器特征模拟)"
+    echo -e " 4. JLS 模式 TCP 端口      : ${YELLOW}${p_jls}${NC} (垃圾数据长度混淆)"
 }
 
 show_menu() {
