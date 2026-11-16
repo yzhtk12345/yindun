@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru 与 Snell v6 原生入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6 与 ShadowQUIC 原生入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -192,7 +192,7 @@ REALITY_CANDIDATES=(
 )
 
 select_best_reality_domain() {
-    echo -e "${CYAN}[INFO] 正在对 REALITY 候选回落域名进行测速优选...${NC}" >&2
+    echo -e "${CYAN}[INFO] 正在对候选伪装域名进行测速优选...${NC}" >&2
     local best_domain="gateway.icloud.com"
     local temp_file="/tmp/yindun_domain_test.log"
     > "$temp_file"
@@ -556,6 +556,78 @@ PY_EOF
     echo -e "运行模式 : ${YELLOW}${snell_mode}${NC}"
 }
 
+# 6. ShadowQUIC (自动测速优选最优 JLS 伪装目标，生成单节点)
+add_shadowquic_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    cleanup_firewall_by_type "shadowquic"
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}        开始配置并写入 ShadowQUIC 服务端入站             ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
+
+    local port
+    port=$(get_available_port "$port_mode" "$manual_port")
+    [[ -z "$port" ]] && return 1
+
+    local sq_user="user_$(openssl rand -hex 3)"
+    local sq_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    local best_domain
+    best_domain=$(select_best_reality_domain)
+    local jls_addr="${best_domain}:443"
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    manage_firewall_port "add" "$port" "udp" "YinDun-ShadowQUIC-${port}"
+    local node_name="shadowquic-in-${host_name}"
+    local db_record="TYPE=shadowquic|NAME=${node_name}|PORT=${port}|USER=${sq_user}|PASS=${sq_pass}|JLS=${jls_addr}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$sq_user" "$sq_pass" "$jls_addr" "$db_record" << 'PY_EOF'
+import sys, os, yaml
+config_path, nodes_db, node_name, port_str, user, passwd, jls, db_record = sys.argv[1:9]
+port = int(port_str)
+
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=shadowquic|")] if os.path.exists(nodes_db) else []
+existing.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
+listeners = []
+if os.path.exists(config_path):
+    try:
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except: pass
+
+listeners.append({
+    "name": node_name,
+    "type": "shadowquic",
+    "port": port,
+    "listen": "0.0.0.0",
+    "users": [{"username": user, "password": passwd}],
+    "jls-upstream": {"addr": jls},
+    "congestion-controller": "bbr"
+})
+
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+    systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] ShadowQUIC 服务端入站配置已写入并重启！${NC}"
+    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
+    echo -e "监听端口 : ${YELLOW}${port} (UDP)${NC}"
+    echo -e "认证账号 : ${YELLOW}${sq_user}${NC}"
+    echo -e "认证密码 : ${YELLOW}${sq_pass}${NC}"
+    echo -e "JLS 伪装 : ${YELLOW}${jls_addr}${NC}"
+}
+
 show_menu() {
     clear
     echo -e "${CYAN}========================================================${NC}"
@@ -566,9 +638,10 @@ show_menu() {
     echo "3. 添加 TUIC v5 服务端节点 (自签证书 + BBR + SNI 隔离)"
     echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
     echo "5. 添加 Snell v6 (Mihomo 原生入站) 服务端节点"
+    echo "6. 添加 ShadowQUIC 服务端节点 (优选 JLS 伪装 + BBR)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-5]: " choice
+    read -p "请选择操作 [0-6]: " choice
 
     case "$choice" in
         1) add_vless_reality_server_config ;;
@@ -576,6 +649,7 @@ show_menu() {
         3) add_tuic_server_config ;;
         4) add_mieru_server_config ;;
         5) add_snell_server_config ;;
+        6) add_shadowquic_server_config ;;
         0) exit 0 ;;
         *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
     esac
