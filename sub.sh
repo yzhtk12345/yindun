@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整支持 VLESS-REALITY、Hy2、TUIC、Mieru、Snell v6 与带 SNI 的 ShadowQUIC）
+# Description: 本地订阅分发守护进程（支持 Mihomo、Sing-box 以及标准 sq:// 格式第三方客户端订阅）
 # ==============================================================================
 
 RED="\033[31m"
@@ -237,7 +237,7 @@ if os.path.exists(nodes_db):
                 })
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
-            # F. ShadowQUIC (含自动提取 JLS 伪装域名作为 SNI)
+            # F. ShadowQUIC (同时生成 Mihomo 原生配置与第三方 sq:// 客户端格式链接)
             elif node_type == "shadowquic":
                 name = parts.get("NAME", "shadowquic-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
@@ -257,7 +257,8 @@ if os.path.exists(nodes_db):
     quic-versions:
       - v1
     congestion-controller: bbr""")
-                all_links.append(f"shadowquic://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?sni={sni_domain}&alpn=h3&quic-versions=v1&congestion-controller=bbr#{urllib.parse.quote(name)}")
+                # 第三方 sq:// 客户端标准 URI 格式
+                all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
