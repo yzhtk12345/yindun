@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（标准 AnyTLS 供通用/Sing-box，4模 AnyTLS 专属 Mihomo）
+# Description: 本地订阅分发守护进程（客户端严格从账本动态直读服务端真实伪装域名）
 # ==============================================================================
 
 RED="\033[31m"
@@ -259,13 +259,16 @@ if os.path.exists(nodes_db):
     congestion-controller: bbr""")
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-            # G. AnyTLS (区分 Mihomo 4 种模式 vs 通用/Sing-box 只支持 Standard 标准模式)
+            # G. AnyTLS (严格从账本动态直读服务端真实域名，匹配官方 *--opts 标准)
             elif node_type == "anytls":
                 name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
                 mode = parts.get("MODE", "standard")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "")
                 
-                # 1. Mihomo 独占：完整支持 4 种模式
+                # 从账本中的 DEST 提取纯域名（去掉端口 :443）
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+
                 mi_node_names.append(name)
                 if mode == "standard":
                     mi_proxies.append(f"""  - name: "{name}"
@@ -275,7 +278,7 @@ if os.path.exists(nodes_db):
     password: "{password}"
     skip-cert-verify: true
     udp: true""")
-                    # 只有 Standard 标准模式才加入通用明文/Base64订阅与 Sing-box
+                    # 标准 AnyTLS 参与通用/Sing-box 订阅
                     box_node_names.append(name)
                     box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
                     all_links.append(f"anytls://{username}:{password}@{ip}:{port_val}?mode=standard#{urllib.parse.quote(name)}")
@@ -286,7 +289,7 @@ if os.path.exists(nodes_db):
     server: {ip}
     port: {port_val}
     password: "{password}"
-    sni: "download.nvidia.com"
+    sni: "{domain}"
     udp: true
     shadow-tls-opts:
       version: 3
@@ -298,7 +301,7 @@ if os.path.exists(nodes_db):
     server: {ip}
     port: {port_val}
     password: "{password}"
-    sni: "cdn.akamai.steamstatic.com"
+    sni: "{domain}"
     udp: true
     restls-opts:
       password: "{password}"
@@ -310,7 +313,7 @@ if os.path.exists(nodes_db):
     server: {ip}
     port: {port_val}
     password: "{password}"
-    sni: "update.code.visualstudio.com"
+    sni: "{domain}"
     udp: true
     jls-opts:
       username: "{username}"
