@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6 与 ShadowQUIC 原生入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC 与 AnyTLS 四大模式原生入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -105,7 +105,7 @@ cleanup_firewall_by_type() {
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q "TYPE=${target_type}|"; then
+            if echo "$line" | grep -q "TYPE=${target_type}|" || echo "$line" | grep -q "TYPE=anytls"; then
                 local old_p
                 old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
                 if [[ -n "$old_p" ]]; then
@@ -556,7 +556,7 @@ PY_EOF
     echo -e "运行模式 : ${YELLOW}${snell_mode}${NC}"
 }
 
-# 6. ShadowQUIC (自动测速优选最优 JLS 伪装目标，生成单节点)
+# 6. ShadowQUIC
 add_shadowquic_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -628,6 +628,155 @@ PY_EOF
     echo -e "JLS 伪装 : ${YELLOW}${jls_addr}${NC}"
 }
 
+# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS)
+add_anytls_all_modes_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    cleanup_firewall_by_type "anytls"
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}        开始配置并写入 AnyTLS 四大模式服务端入站       ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    # 1. 准备标准模式专属简洁自签证书 (anytls.crt / anytls.key)
+    local cert_dir="${CONFIG_DIR}/cert"
+    mkdir -p "$cert_dir"
+    local cert_file="${cert_dir}/anytls.crt"
+    local key_file="${cert_dir}/anytls.key"
+    if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
+        echo -e "${CYAN}[INFO] 正在生成 AnyTLS 简洁自签证书 (anytls.crt / anytls.key)...${NC}"
+        openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=microsoft.com" 2>/dev/null
+    fi
+
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    # 动态获取 4 个可用端口
+    echo -e "${CYAN}[INFO] 正在为 4 种 AnyTLS 模式自动分配端口...${NC}"
+    local p_std p_stls p_rtls p_jls
+    p_std=$(get_available_port "auto" "")
+    p_stls=$(get_available_port "auto" "")
+    p_rtls=$(get_available_port "auto" "")
+    p_jls=$(get_available_port "auto" "")
+
+    # 放行防火墙端口 (TCP/UDP 双协议)
+    manage_firewall_port "add" "$p_std" "both" "YinDun-AnyTLS-Standard-${p_std}"
+    manage_firewall_port "add" "$p_stls" "both" "YinDun-AnyTLS-ShadowTLS-${p_stls}"
+    manage_firewall_port "add" "$p_rtls" "both" "YinDun-AnyTLS-ResTLS-${p_rtls}"
+    manage_firewall_port "add" "$p_jls" "both" "YinDun-AnyTLS-JLS-${p_jls}"
+
+    # 生成各模式账号密码
+    local u_std="user_$(openssl rand -hex 3)" pass_std="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
+    local u_stls="user_$(openssl rand -hex 3)" pass_stls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
+    local u_rtls="user_$(openssl rand -hex 3)" pass_rtls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
+    local u_jls="user_$(openssl rand -hex 3)" pass_jls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
+
+    local name_std="anytls-standard-in-${host_name}"
+    local name_stls="anytls-shadowtls-in-${host_name}"
+    local name_rtls="anytls-restls-in-${host_name}"
+    local name_jls="anytls-jls-in-${host_name}"
+
+    # 写入总账本记录
+    local rec_std="TYPE=anytls|MODE=standard|NAME=${name_std}|PORT=${p_std}|USER=${u_std}|PASS=${pass_std}|IP=${server_ip}"
+    local rec_stls="TYPE=anytls|MODE=shadowtls|NAME=${name_stls}|PORT=${p_stls}|USER=${u_stls}|PASS=${pass_stls}|IP=${server_ip}"
+    local rec_rtls="TYPE=anytls|MODE=restls|NAME=${name_rtls}|PORT=${p_rtls}|USER=${u_rtls}|PASS=${pass_rtls}|IP=${server_ip}"
+    local rec_jls="TYPE=anytls|MODE=jls|NAME=${name_jls}|PORT=${p_jls}|USER=${u_jls}|PASS=${pass_jls}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" \
+        "$name_std" "$p_std" "$u_std" "$pass_std" "$cert_file" "$key_file" "$rec_std" \
+        "$name_stls" "$p_stls" "$u_stls" "$pass_stls" "$rec_stls" \
+        "$name_rtls" "$p_rtls" "$u_rtls" "$pass_rtls" "$rec_rtls" \
+        "$name_jls" "$p_jls" "$u_jls" "$pass_jls" "$rec_jls" << 'PY_EOF'
+import sys, os, yaml
+args = sys.argv[1:]
+config_path = args[0]
+nodes_db = args[1]
+
+# 提取参数
+n_std, p_std, u_std, pw_std, crt, key, rec_std = args[2:9]
+n_stls, p_stls, u_stls, pw_stls, rec_stls = args[9:14]
+n_rtls, p_rtls, u_rtls, pw_rtls, rec_rtls = args[14:19]
+n_jls, p_jls, u_jls, pw_jls, rec_jls = args[19:24]
+
+anytls_names = {n_std, n_stls, n_rtls, n_jls}
+new_records = [rec_std, rec_stls, rec_rtls, rec_jls]
+
+# 更新总账本
+existing = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, encoding="utf-8") as f:
+        for line in f:
+            l = line.strip()
+            if not l: continue
+            # 过滤掉旧的anytls记录
+            if "TYPE=anytls" in l:
+                continue
+            existing.append(l)
+existing.extend(new_records)
+with open(nodes_db, "w", encoding="utf-8") as f:
+    f.write("\n".join(existing) + "\n")
+
+# 加载并更新 config.yaml 中的 listeners
+listeners = []
+if os.path.exists(config_path):
+    try:
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") not in anytls_names]
+    except: pass
+
+# 1. Standard TLS Mode
+listeners.append({
+    "name": n_std, "type": "anytls", "port": int(p_std), "listen": "0.0.0.0",
+    "users": {u_std: pw_std}, "certificate": crt, "private-key": key
+})
+
+# 2. Shadow-TLS v3 Mode
+listeners.append({
+    "name": n_stls, "type": "anytls", "port": int(p_stls), "listen": "0.0.0.0",
+    "users": {u_stls: pw_stls},
+    "shadow-tls": {
+        "enable": True, "version": 3,
+        "users": [{"name": u_stls, "password": pw_stls}],
+        "handshake": {"dest": "microsoft.com:443"}
+    }
+})
+
+# 3. ResTLS Mode
+listeners.append({
+    "name": n_rtls, "type": "anytls", "port": int(p_rtls), "listen": "0.0.0.0",
+    "users": {u_rtls: pw_rtls},
+    "res-tls": {
+        "enable": True, "dest": "microsoft.com:443", "password": pw_rtls
+    }
+})
+
+# 4. JLS Mode
+listeners.append({
+    "name": n_jls, "type": "anytls", "port": int(p_jls), "listen": "0.0.0.0",
+    "users": {u_jls: pw_jls},
+    "jls-config": {
+        "enable": True,
+        "users": [{"username": u_jls, "password": pw_jls}],
+        "dest": "microsoft.com:443", "sni": "microsoft.com"
+    }
+})
+
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+
+    systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置已全部写入并重启！${NC}"
+    echo -e " 1. Standard 模式端口 : ${YELLOW}${p_std}${NC} (证书: anytls.crt)"
+    echo -e " 2. Shadow-TLS 端口   : ${YELLOW}${p_stls}${NC} (v3 核心防主动探测)"
+    echo -e " 3. ResTLS 模式端口   : ${YELLOW}${p_rtls}${NC} (浏览器特征模拟)"
+    echo -e " 4. JLS 填充模式端口  : ${YELLOW}${p_jls}${NC} (垃圾数据长度混淆)"
+}
+
 show_menu() {
     clear
     echo -e "${CYAN}========================================================${NC}"
@@ -639,9 +788,10 @@ show_menu() {
     echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
     echo "5. 添加 Snell v6 (Mihomo 原生入站) 服务端节点"
     echo "6. 添加 ShadowQUIC 服务端节点 (优选 JLS 伪装 + BBR)"
+    echo "7. 添加 AnyTLS 四大模式服务端节点 (Standard / Shadow-TLS / ResTLS / JLS)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-6]: " choice
+    read -p "请选择操作 [0-7]: " choice
 
     case "$choice" in
         1) add_vless_reality_server_config ;;
@@ -650,6 +800,7 @@ show_menu() {
         4) add_mieru_server_config ;;
         5) add_snell_server_config ;;
         6) add_shadowquic_server_config ;;
+        7) add_anytls_all_modes_server_config ;;
         0) exit 0 ;;
         *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
     esac
