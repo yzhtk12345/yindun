@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（全面支持 VLESS-REALITY、Hy2、TUIC、Mieru、Snell v6 与 ShadowQUIC）
+# Description: 本地订阅分发守护进程（完整支持 VLESS-REALITY、Hy2、TUIC、Mieru、Snell v6 与带 SNI 的 ShadowQUIC）
 # ==============================================================================
 
 RED="\033[31m"
@@ -195,7 +195,7 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "tuic", "tag": name, "server": ip, "server_port": int(port_val), "uuid": tuic_uuid, "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}, "congestion_control": "bbr"})
                 all_links.append(f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{urllib.parse.quote(name)}")
 
-            # D. Mieru TCP / UDP (Sing-box 不支持，仅生成 Mihomo 与通用链接)
+            # D. Mieru TCP / UDP
             elif node_type in ["mieru-tcp", "mieru-udp"]:
                 name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
@@ -210,7 +210,7 @@ if os.path.exists(nodes_db):
     transport: {transport_type}""")
                 all_links.append(f"mierus://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?profile={urllib.parse.quote(name)}&port={port_val}&protocol={transport_type}#{urllib.parse.quote(name)}")
 
-            # E. Snell v6 (同时支持 Mihomo 与 Sing-box 原生出站)
+            # E. Snell v6
             elif node_type == "snell":
                 name = parts.get("NAME", "snell-node").replace("-in-", "-out-")
                 ip, port_val, psk = parts.get("IP"), parts.get("PORT"), parts.get("PSK")
@@ -237,10 +237,13 @@ if os.path.exists(nodes_db):
                 })
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
-            # F. ShadowQUIC (Mihomo 原生支持，自动跳过 Sing-box 防止解析报错)
+            # F. ShadowQUIC (含自动提取 JLS 伪装域名作为 SNI)
             elif node_type == "shadowquic":
                 name = parts.get("NAME", "shadowquic-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                jls_addr = parts.get("JLS", "microsoft.com:443")
+                sni_domain = jls_addr.split(":")[0] if ":" in jls_addr else jls_addr
+                
                 mi_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: shadowquic
@@ -248,12 +251,13 @@ if os.path.exists(nodes_db):
     port: {port_val}
     username: {username}
     password: {password}
+    sni: {sni_domain}
     alpn:
       - h3
     quic-versions:
       - v1
     congestion-controller: bbr""")
-                all_links.append(f"shadowquic://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?alpn=h3&quic-versions=v1&congestion-controller=bbr#{urllib.parse.quote(name)}")
+                all_links.append(f"shadowquic://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?sni={sni_domain}&alpn=h3&quic-versions=v1&congestion-controller=bbr#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
