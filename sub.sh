@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（修复底部语法错误，完美支持 AnyTLS 四大模式与标准链接）
+# Description: 本地订阅分发守护进程（AnyTLS 标准通用订阅参数完全对齐官方标准）
 # ==============================================================================
 
 RED="\033[31m"
@@ -259,7 +259,7 @@ if os.path.exists(nodes_db):
     congestion-controller: bbr""")
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-            # G. AnyTLS (严格直读账本域名，标准通用链接仅密码 + allow_insecure=1)
+            # G. AnyTLS (标准通用链接完美对齐标准参数：insecure=1&security=tls&type=tcp&headerType=none)
             elif node_type == "anytls":
                 name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
                 mode = parts.get("MODE", "standard")
@@ -276,10 +276,10 @@ if os.path.exists(nodes_db):
     password: "{password}"
     skip-cert-verify: true
     udp: true""")
-                    # 标准 AnyTLS 通用链接（仅保留密码，并携带 allow_insecure=1 跳过自签证书验证）
+                    # 对齐标准 AnyTLS 通用分享链接格式
                     box_node_names.append(name)
                     box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
-                    all_links.append(f"anytls://{password}@{ip}:{port_val}?mode=standard&allow_insecure=1#{urllib.parse.quote(name)}")
+                    all_links.append(f"anytls://{password}@{ip}:{port_val}?insecure=1&security=tls&type=tcp&headerType=none#{urllib.parse.quote(name)}")
 
                 elif mode == "shadowtls":
                     mi_proxies.append(f"""  - name: "{name}"
