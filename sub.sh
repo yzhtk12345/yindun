@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（支持 Mihomo、Sing-box 以及标准 sq:// 格式第三方客户端订阅）
+# Description: 本地订阅分发守护进程（标准 AnyTLS 供通用/Sing-box，4模 AnyTLS 专属 Mihomo）
 # ==============================================================================
 
 RED="\033[31m"
@@ -237,11 +237,11 @@ if os.path.exists(nodes_db):
                 })
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
-            # F. ShadowQUIC (同时生成 Mihomo 原生配置与第三方 sq:// 客户端格式链接)
+            # F. ShadowQUIC
             elif node_type == "shadowquic":
                 name = parts.get("NAME", "shadowquic-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
-                jls_addr = parts.get("JLS", "microsoft.com:443")
+                jls_addr = parts.get("JLS", "download.nvidia.com:443")
                 sni_domain = jls_addr.split(":")[0] if ":" in jls_addr else jls_addr
                 
                 mi_node_names.append(name)
@@ -257,8 +257,64 @@ if os.path.exists(nodes_db):
     quic-versions:
       - v1
     congestion-controller: bbr""")
-                # 第三方 sq:// 客户端标准 URI 格式
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
+
+            # G. AnyTLS (区分 Mihomo 4 种模式 vs 通用/Sing-box 只支持 Standard 标准模式)
+            elif node_type == "anytls":
+                name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
+                mode = parts.get("MODE", "standard")
+                ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
+                
+                # 1. Mihomo 独占：完整支持 4 种模式
+                mi_node_names.append(name)
+                if mode == "standard":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    skip-cert-verify: true
+    udp: true""")
+                    # 只有 Standard 标准模式才加入通用明文/Base64订阅与 Sing-box
+                    box_node_names.append(name)
+                    box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
+                    all_links.append(f"anytls://{username}:{password}@{ip}:{port_val}?mode=standard#{urllib.parse.quote(name)}")
+
+                elif mode == "shadowtls":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    sni: "download.nvidia.com"
+    udp: true
+    shadow-tls-opts:
+      version: 3
+      password: "{password}" """)
+
+                elif mode == "restls":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    sni: "cdn.akamai.steamstatic.com"
+    udp: true
+    restls-opts:
+      password: "{password}"
+      version-hint: "tls13" """)
+
+                elif mode == "jls":
+                    mi_proxies.append(f"""  - name: "{name}"
+    type: anytls
+    server: {ip}
+    port: {port_val}
+    password: "{password}"
+    sni: "update.code.visualstudio.com"
+    udp: true
+    jls-opts:
+      username: "{username}"
+      password: "{password}" """)
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
