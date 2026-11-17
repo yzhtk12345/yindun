@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（语法修复版，完美支持所有节点变体）
+# Description: 本地订阅分发守护进程（完美修复 XHTTP-H3 证书指纹/SHA256 与 ShadowTLS 握手）
 # ==============================================================================
 
 RED="\033[31m"
@@ -342,7 +342,7 @@ if os.path.exists(nodes_db):
       support-x25519mlkem768: false""")
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
 
-            # 2. XHTTP-ShadowTLS -> 修复：恢复 tls: true，使 Mihomo 正常通过 Shadow-TLS 校验
+            # 2. XHTTP-ShadowTLS -> 修复：补全完整的 client-fingerprint 和 shadow-tls 客户端结构
             elif node_type == "xhttp-shadowtls":
                 name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -357,6 +357,7 @@ if os.path.exists(nodes_db):
     network: xhttp
     tls: true
     udp: true
+    client-fingerprint: chrome
     servername: {domain}
     xhttp-opts:
       path: "/yindun-xst"
@@ -364,7 +365,8 @@ if os.path.exists(nodes_db):
       mode: "stream-up"
     shadow-tls-opts:
       version: 3
-      password: "{password}" """)
+      password: "{password}"
+      servername: "{domain}" """)
 
             # 3. XHTTP-ResTLS -> 仅 Mihomo
             elif node_type == "xhttp-restls":
@@ -414,7 +416,7 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # 5. XHTTP-H3-UDP -> Mihomo + 通用订阅
+            # 5. XHTTP-H3-UDP -> 修复：Mihomo 补全 client-fingerprint: chrome，通用订阅补全 pinSHA256 占位及安全参数
             elif node_type == "xhttp-h3":
                 name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
                 ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "speed.cloudflare.com")
@@ -428,6 +430,7 @@ if os.path.exists(nodes_db):
     tls: true
     udp: true
     skip-cert-verify: true
+    client-fingerprint: chrome
     servername: {domain}
     alpn:
       - h3
@@ -435,7 +438,7 @@ if os.path.exists(nodes_db):
       path: "/yindun-xh3"
       host: "{domain}"
       mode: "packet-up" """)
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&allowInsecure=1&type=xhttp&host={domain}&path=%2Fyindun-xh3&mode=packet-up#{urllib.parse.quote(name)}")
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&allowInsecure=1&fp=chrome&type=xhttp&host={domain}&path=%2Fyindun-xh3&mode=packet-up#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
