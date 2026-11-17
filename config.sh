@@ -902,7 +902,7 @@ listeners.append({
     "name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xh3, "flow": ""}],
     "network": "xhttp",
-    "xhttp-config": {"path": "yindun-xh3", "host": d_h3, "mode": "auto"},
+    "xhttp-config": {"path": "/yindun-xh3", "host": d_h3, "mode": "auto"},
     "alpn": ["h3"],
     "certificate": h3_crt,
     "private-key": h3_key
