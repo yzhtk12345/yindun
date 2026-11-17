@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整集成各协议生成与 xhttp-h3 证书指纹）
+# Description: 本地订阅分发守护进程（完整集成各协议生成与 xhttp-h3 证书指纹 pcs=）
 # ==============================================================================
 
 RED="\033[31m"
@@ -412,7 +412,7 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # 5. XHTTP-H3-UDP -> 完美对接 quic 传输、指纹 pinSHA256 校验
+            # 5. XHTTP-H3-UDP -> 完美对接 network: xhttp、mode: auto 以及携带 pcs= 指纹的明文链接
             elif node_type == "xhttp-h3":
                 name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
                 ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "cloudflare.com")
@@ -423,7 +423,7 @@ if os.path.exists(nodes_db):
     server: {ip}
     port: {port_val}
     uuid: {uuid}
-    network: quic
+    network: xhttp
     tls: true
     udp: true
     skip-cert-verify: false
@@ -436,7 +436,7 @@ if os.path.exists(nodes_db):
       path: "yindun-xh3"
       host: "{domain}"
       mode: "auto" """)
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pinSHA256={fingerprint}&fp=chrome&type=quic&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pcs={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
@@ -573,7 +573,7 @@ start_daemon() {
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
     prepare_python_server
-    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
+    manage_firewall_port "add" "$web_port" "tcp" "YinDun-Sub-${web_port}"
     local server_ip
     server_ip=$(get_public_ip)
 
