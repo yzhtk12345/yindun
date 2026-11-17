@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC 与 AnyTLS 四大模式原生入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS 及 5 大 XHTTP 变体原生入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -191,7 +191,6 @@ REALITY_CANDIDATES=(
     "speed.cloudflare.com"
 )
 
-# 通用候选域名测速优选函数（支持传入自定义域名列表）
 select_best_domain_from_list() {
     local fallback="$1"
     shift
@@ -490,7 +489,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] Mieru (TCP & UDP) 服务端入站配置完成！${NC}"
 }
 
-# 5. Snell v6 (Mihomo 原生入站 v6)
+# 5. Snell v6
 add_snell_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -556,11 +555,6 @@ with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] Snell v6 原生入站配置已写入并重启！${NC}"
-    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口 : ${YELLOW}${port} (TCP)${NC}"
-    echo -e "PSK 密码 : ${YELLOW}${snell_psk}${NC}"
-    echo -e "协议版本 : ${YELLOW}v6 (UDP over TCP)${NC}"
-    echo -e "运行模式 : ${YELLOW}${snell_mode}${NC}"
 }
 
 # 6. ShadowQUIC
@@ -628,14 +622,9 @@ with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] ShadowQUIC 服务端入站配置已写入并重启！${NC}"
-    echo -e "入站标识 : ${YELLOW}${node_name}${NC}"
-    echo -e "监听端口 : ${YELLOW}${port} (UDP)${NC}"
-    echo -e "认证账号 : ${YELLOW}${sq_user}${NC}"
-    echo -e "认证密码 : ${YELLOW}${sq_pass}${NC}"
-    echo -e "JLS 伪装 : ${YELLOW}${jls_addr}${NC}"
 }
 
-# 7. AnyTLS 四大模式一键入站集成 (Standard, Shadow-TLS, ResTLS, JLS) - 独立低调高权重域名优选版
+# 7. AnyTLS 四大模式
 add_anytls_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -647,17 +636,14 @@ add_anytls_all_modes_server_config() {
     echo -e "${CYAN}  开始配置并写入 AnyTLS 四大模式服务端入站 (智能优选伪装)  ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    # 1. 准备标准模式专属简洁自签证书 (anytls.crt / anytls.key) 放在 /etc/yindun/mihomo/cert/
     local cert_dir="${CONFIG_DIR}/cert"
     mkdir -p "$cert_dir"
     local cert_file="${cert_dir}/anytls.crt"
     local key_file="${cert_dir}/anytls.key"
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        echo -e "${CYAN}[INFO] 正在生成 AnyTLS 简洁自签证书 (anytls.crt / anytls.key)...${NC}"
         openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=download.nvidia.com" 2>/dev/null
     fi
 
-    # 2. 为三个高级模式分别测速优选不撞脸的高可用 CDN/软件分发域名
     echo -e "${CYAN}[INFO] 正在为 Shadow-TLS 优选驱动/硬件CDN域名...${NC}"
     local stls_domain
     stls_domain=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com" "downloads.dell.com")
@@ -673,21 +659,17 @@ add_anytls_all_modes_server_config() {
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
-    # 动态获取 4 个可用端口
-    echo -e "${CYAN}[INFO] 正在为 4 种 AnyTLS 模式自动分配端口...${NC}"
     local p_std p_stls p_rtls p_jls
     p_std=$(get_available_port "auto" "")
     p_stls=$(get_available_port "auto" "")
     p_rtls=$(get_available_port "auto" "")
     p_jls=$(get_available_port "auto" "")
 
-    # 仅放行 TCP 端口（标准 TLS 规范）
     manage_firewall_port "add" "$p_std" "tcp" "YinDun-AnyTLS-Standard-${p_std}"
     manage_firewall_port "add" "$p_stls" "tcp" "YinDun-AnyTLS-ShadowTLS-${p_stls}"
     manage_firewall_port "add" "$p_rtls" "tcp" "YinDun-AnyTLS-ResTLS-${p_rtls}"
     manage_firewall_port "add" "$p_jls" "tcp" "YinDun-AnyTLS-JLS-${p_jls}"
 
-    # 生成各模式账号密码
     local u_std="user_$(openssl rand -hex 3)" pass_std="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
     local u_stls="user_$(openssl rand -hex 3)" pass_stls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
     local u_rtls="user_$(openssl rand -hex 3)" pass_rtls="$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)"
@@ -698,7 +680,6 @@ add_anytls_all_modes_server_config() {
     local name_rtls="anytls-restls-in-${host_name}"
     local name_jls="anytls-jls-in-${host_name}"
 
-    # 写入总账本记录（动态写入优选后的独立伪装域名）
     local rec_std="TYPE=anytls|MODE=standard|NAME=${name_std}|PORT=${p_std}|USER=${u_std}|PASS=${pass_std}|IP=${server_ip}"
     local rec_stls="TYPE=anytls|MODE=shadowtls|NAME=${name_stls}|PORT=${p_stls}|USER=${u_stls}|PASS=${pass_stls}|DEST=${stls_domain}:443|IP=${server_ip}"
     local rec_rtls="TYPE=anytls|MODE=restls|NAME=${name_rtls}|PORT=${p_rtls}|USER=${u_rtls}|PASS=${pass_rtls}|DEST=${rtls_domain}:443|IP=${server_ip}"
@@ -728,12 +709,10 @@ if os.path.exists(nodes_db):
         for line in f:
             l = line.strip()
             if not l: continue
-            if "TYPE=anytls" in l:
-                continue
+            if "TYPE=anytls" in l: continue
             existing.append(l)
 existing.extend(new_records)
-with open(nodes_db, "w", encoding="utf-8") as f:
-    f.write("\n".join(existing) + "\n")
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 
 listeners = []
 if os.path.exists(config_path):
@@ -743,41 +722,191 @@ if os.path.exists(config_path):
             listeners = [l for l in loaded["listeners"] if l.get("name") not in anytls_names]
     except: pass
 
-# 1. Standard TLS Mode (自签证书)
+listeners.append({"name": n_std, "type": "anytls", "port": int(p_std), "listen": "0.0.0.0", "users": {u_std: pw_std}, "certificate": crt, "private-key": key})
+listeners.append({"name": n_stls, "type": "anytls", "port": int(p_stls), "listen": "0.0.0.0", "users": {u_stls: pw_stls}, "shadow-tls": {"enable": True, "version": 3, "users": [{"name": u_stls, "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}})
+listeners.append({"name": n_rtls, "type": "anytls", "port": int(p_rtls), "listen": "0.0.0.0", "users": {u_rtls: pw_rtls}, "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}})
+listeners.append({"name": n_jls, "type": "anytls", "port": int(p_jls), "listen": "0.0.0.0", "users": {u_jls: pw_jls}, "jls-config": {"enable": True, "users": [{"username": u_jls, "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}})
+
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+    systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置完成！${NC}"
+}
+
+# ==============================================================================
+# 8. XHTTP 系列节点 (多域名不重复原则：Reality, Shadow-TLS, ResTLS, JLS, H3-UDP)
+# ==============================================================================
+add_xhttp_all_modes_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    cleanup_firewall_by_type "xhttp-reality"
+    cleanup_firewall_by_type "xhttp-shadowtls"
+    cleanup_firewall_by_type "xhttp-restls"
+    cleanup_firewall_by_type "xhttp-jls"
+    cleanup_firewall_by_type "xhttp-h3"
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}  开始配置并写入 XHTTP 5大变体服务端入站 (多域名不重复)   ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    local mihomo_bin="${CONFIG_DIR}/mihomo"
+    [ ! -x "$mihomo_bin" ] && echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件！${NC}" && return 1
+
+    # 严格遵循多域名不重复原则，为各个 XHTTP 变体挑选互不相同的优质官方/大厂分发域名作为掩护
+    echo -e "${CYAN}[INFO] 正在为 XHTTP-Reality 优选伪装域名...${NC}"
+    local x_dom_reality
+    x_dom_reality=$(select_best_domain_from_list "gateway.icloud.com" "gateway.icloud.com" "dl.google.com")
+
+    echo -e "${CYAN}[INFO] 正在为 XHTTP-ShadowTLS 优选独立硬件驱动CDN域名...${NC}"
+    local x_dom_stls
+    x_dom_stls=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com")
+
+    echo -e "${CYAN}[INFO] 正在为 XHTTP-ResTLS 优选静态资源CDN域名...${NC}"
+    local x_dom_rtls
+    x_dom_rtls=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com")
+
+    echo -e "${CYAN}[INFO] 正在为 XHTTP-JLS 优选开源组件CDN域名...${NC}"
+    local x_dom_jls
+    x_dom_jls=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "registry.npmjs.org")
+
+    echo -e "${CYAN}[INFO] 正在为 XHTTP-H3-UDP 优选云服务CDN域名...${NC}"
+    local x_dom_h3
+    x_dom_h3=$(select_best_domain_from_list "speed.cloudflare.com" "speed.cloudflare.com" "cloudflare.com")
+
+    local server_ip
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    # 自动分配 5 个独立端口
+    echo -e "${CYAN}[INFO] 正在为 5 种 XHTTP 变体自动分配端口...${NC}"
+    local p_xr p_xst p_xrt p_xj p_xh3
+    p_xr=$(get_available_port "auto" "")
+    p_xst=$(get_available_port "auto" "")
+    p_xrt=$(get_available_port "auto" "")
+    p_xj=$(get_available_port "auto" "")
+    p_xh3=$(get_available_port "auto" "")
+
+    # 放行防火墙端口 (前4个TCP，第5个H3独占UDP)
+    manage_firewall_port "add" "$p_xr" "tcp" "YinDun-XHTTP-Reality-${p_xr}"
+    manage_firewall_port "add" "$p_xst" "tcp" "YinDun-XHTTP-ShadowTLS-${p_xst}"
+    manage_firewall_port "add" "$p_xrt" "tcp" "YinDun-XHTTP-ResTLS-${p_xrt}"
+    manage_firewall_port "add" "$p_xj" "tcp" "YinDun-XHTTP-JLS-${p_xj}"
+    manage_firewall_port "add" "$p_xh3" "udp" "YinDun-XHTTP-H3-${p_xh3}"
+
+    # 生成 Reality 密钥对
+    local kp_xr priv_xr pub_xr sid_xr
+    kp_xr=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
+    priv_xr=$(echo "$kp_xr" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
+    pub_xr=$(echo "$kp_xr" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
+    sid_xr=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
+
+    # 生成各节点通用或独立凭据
+    local uuid_base uuid_stls uuid_rtls uuid_jls uuid_h3
+    uuid_base=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    uuid_stls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    uuid_rtls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    uuid_jls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    uuid_h3=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+
+    local stls_pass restls_pass jls_pass
+    stls_pass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)
+    restls_pass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)
+    jls_pass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)
+
+    local name_xr="xhttp-reality-in-${host_name}"
+    local name_xst="xhttp-shadowtls-in-${host_name}"
+    local name_xrt="xhttp-restls-in-${host_name}"
+    local name_xj="xhttp-jls-in-${host_name}"
+    local name_xh3="xhttp-h3-in-${host_name}"
+
+    # 写入总账本记录 (带上各自独立的域名标记)
+    local r_xr="TYPE=xhttp-reality|NAME=${name_xr}|PORT=${p_xr}|UUID=${uuid_base}|PRIV=${priv_xr}|PUB=${pub_xr}|SHORTID=${sid_xr}|DOMAIN=${x_dom_reality}|IP=${server_ip}"
+    local r_xst="TYPE=xhttp-shadowtls|NAME=${name_xst}|PORT=${p_xst}|UUID=${uuid_stls}|PASS=${stls_pass}|DEST=${x_dom_stls}:443|IP=${server_ip}"
+    local r_xrt="TYPE=xhttp-restls|NAME=${name_xrt}|PORT=${p_xrt}|UUID=${uuid_rtls}|PASS=${restls_pass}|DEST=${x_dom_rtls}:443|IP=${server_ip}"
+    local r_xj="TYPE=xhttp-jls|NAME=${name_xj}|PORT=${p_xj}|UUID=${uuid_jls}|PASS=${jls_pass}|DEST=${x_dom_jls}:443|SNI=${x_dom_jls}|IP=${server_ip}"
+    local r_xh3="TYPE=xhttp-h3|NAME=${name_xh3}|PORT=${p_xh3}|UUID=${uuid_h3}|DOMAIN=${x_dom_h3}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" \
+        "$name_xr" "$p_xr" "$uuid_base" "$x_dom_reality" "$priv_xr" "$pub_xr" "$sid_xr" "$r_xr" \
+        "$name_xst" "$p_xst" "$uuid_stls" "$stls_pass" "$x_dom_stls" "$r_xst" \
+        "$name_xrt" "$p_xrt" "$uuid_rtls" "$restls_pass" "$x_dom_rtls" "$r_xrt" \
+        "$name_xj" "$p_xj" "$uuid_jls" "$jls_pass" "$x_dom_jls" "$r_xj" \
+        "$name_xh3" "$p_xh3" "$uuid_h3" "$x_dom_h3" "$r_xh3" << 'PY_EOF'
+import sys, os, yaml
+args = sys.argv[1:]
+config_path, nodes_db = args[0], args[1]
+
+n_xr, p_xr, u_xr, d_xr, priv, pub, sid, rec_xr = args[2:10]
+n_xst, p_xst, u_xst, pw_stls, d_stls, rec_xst = args[10:16]
+n_xrt, p_xrt, u_xrt, pw_rtls, d_rtls, rec_xrt = args[16:22]
+n_xj, p_xj, u_xj, pw_jls, d_jls, rec_xj = args[22:28]
+n_xh3, p_xh3, u_xh3, d_h3, rec_xh3 = args[28:33]
+
+xhttp_names = {n_xr, n_xst, n_xrt, n_xj, n_xh3}
+new_records = [rec_xr, rec_xst, rec_xrt, rec_xj, rec_xh3]
+
+existing = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, encoding="utf-8") as f:
+        for line in f:
+            l = line.strip()
+            if not l: continue
+            if any(t in l for t in ["TYPE=xhttp-reality", "TYPE=xhttp-shadowtls", "TYPE=xhttp-restls", "TYPE=xhttp-jls", "TYPE=xhttp-h3"]):
+                continue
+            existing.append(l)
+existing.extend(new_records)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
+listeners = []
+if os.path.exists(config_path):
+    try:
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") not in xhttp_names]
+    except: pass
+
+# 1. VLESS XHTTP Reality
 listeners.append({
-    "name": n_std, "type": "anytls", "port": int(p_std), "listen": "0.0.0.0",
-    "users": {u_std: pw_std}, "certificate": crt, "private-key": key
+    "name": n_xr, "type": "vless", "port": int(p_xr), "listen": "0.0.0.0",
+    "users": [{"username": "1", "uuid": u_xr, "flow": ""}],
+    "xhttp-config": {"path": "/yindun-xr", "host": d_xr, "mode": "stream-up", "uplink-http-method": "POST"},
+    "reality-config": {"dest": f"{d_xr}:443", "private-key": priv, "short-id": [sid], "server-names": [d_xr]}
 })
 
-# 2. Shadow-TLS v3 Mode (硬件/驱动分发 CDN)
+# 2. VLESS XHTTP Shadow-TLS
 listeners.append({
-    "name": n_stls, "type": "anytls", "port": int(p_stls), "listen": "0.0.0.0",
-    "users": {u_stls: pw_stls},
-    "shadow-tls": {
-        "enable": True, "version": 3,
-        "users": [{"name": u_stls, "password": pw_stls}],
-        "handshake": {"dest": f"{d_stls}:443"}
-    }
+    "name": n_xst, "type": "vless", "port": int(p_xst), "listen": "0.0.0.0",
+    "users": [{"username": "1", "uuid": u_xst, "flow": ""}],
+    "xhttp-config": {"path": "/yindun-xst", "host": d_stls, "mode": "stream-up", "uplink-http-method": "POST"},
+    "shadow-tls": {"enable": True, "version": 3, "users": [{"name": "1", "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}
 })
 
-# 3. ResTLS Mode (游戏/内容静态资源 CDN)
+# 3. VLESS XHTTP Res-TLS
 listeners.append({
-    "name": n_rtls, "type": "anytls", "port": int(p_rtls), "listen": "0.0.0.0",
-    "users": {u_rtls: pw_rtls},
-    "res-tls": {
-        "enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls
-    }
+    "name": n_xrt, "type": "vless", "port": int(p_xrt), "listen": "0.0.0.0",
+    "users": [{"username": "1", "uuid": u_xrt, "flow": ""}],
+    "xhttp-config": {"path": "/yindun-xrt", "host": d_rtls, "mode": "stream-up", "uplink-http-method": "POST"},
+    "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}
 })
 
-# 4. JLS Mode (开源/工具官方更新 CDN)
+# 4. VLESS XHTTP JLS
 listeners.append({
-    "name": n_jls, "type": "anytls", "port": int(p_jls), "listen": "0.0.0.0",
-    "users": {u_jls: pw_jls},
-    "jls-config": {
-        "enable": True,
-        "users": [{"username": u_jls, "password": pw_jls}],
-        "dest": f"{d_jls}:443", "sni": d_jls
-    }
+    "name": n_xj, "type": "vless", "port": int(p_xj), "listen": "0.0.0.0",
+    "users": [{"username": "1", "uuid": u_xj, "flow": ""}],
+    "xhttp-config": {"path": "/yindun-xj", "host": d_jls, "mode": "stream-up", "uplink-http-method": "POST"},
+    "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}
+})
+
+# 5. VLESS XHTTP H3 (UDP 端口 + HTTP/3 传输)
+listeners.append({
+    "name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0",
+    "users": [{"username": "1", "uuid": u_xh3, "flow": ""}],
+    "network": "quic",
+    "xhttp-config": {"path": "/yindun-xh3", "host": d_h3, "mode": "packet-up"},
+    "alpn": ["h3"]
 })
 
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
@@ -786,11 +915,12 @@ with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n
 PY_EOF
 
     systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置已全部写入并重启！${NC}"
-    echo -e " 1. Standard 模式 TCP 端口 : ${YELLOW}${p_std}${NC} (本地自签证书: anytls.crt)"
-    echo -e " 2. Shadow-TLS TCP 端口   : ${YELLOW}${p_stls}${NC} (优选伪装: ${stls_domain})"
-    echo -e " 3. ResTLS 模式 TCP 端口   : ${YELLOW}${p_rtls}${NC} (优选伪装: ${rtls_domain})"
-    echo -e " 4. JLS 模式 TCP 端口      : ${YELLOW}${p_jls}${NC} (优选伪装: ${jls_domain})"
+    echo -e "${GREEN}[SUCCESS] XHTTP 5大变体服务端入站配置已全部写入并成功重启！${NC}"
+    echo -e " 1. XHTTP-Reality 端口   : ${YELLOW}${p_xr}${NC} (多域名: ${x_dom_reality})"
+    echo -e " 2. XHTTP-ShadowTLS 端口 : ${YELLOW}${p_xst}${NC} (多域名: ${x_dom_stls})"
+    echo -e " 3. XHTTP-ResTLS 端口    : ${YELLOW}${p_xrt}${NC} (多域名: ${x_dom_rtls})"
+    echo -e " 4. XHTTP-JLS 端口       : ${YELLOW}${p_xj}${NC} (多域名: ${x_dom_jls})"
+    echo -e " 5. XHTTP-H3-UDP 端口    : ${YELLOW}${p_xh3}${NC} (多域名: ${x_dom_h3})"
 }
 
 show_menu() {
@@ -805,9 +935,10 @@ show_menu() {
     echo "5. 添加 Snell v6 (Mihomo 原生入站) 服务端节点"
     echo "6. 添加 ShadowQUIC 服务端节点 (优选 JLS 伪装 + BBR)"
     echo "7. 添加 AnyTLS 四大模式服务端节点 (Standard / Shadow-TLS / ResTLS / JLS)"
+    echo "8. 添加 XHTTP 5大变体服务端节点 (Reality / Shadow-TLS / ResTLS / JLS / H3-UDP)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-7]: " choice
+    read -p "请选择操作 [0-8]: " choice
 
     case "$choice" in
         1) add_vless_reality_server_config ;;
@@ -817,6 +948,7 @@ show_menu() {
         5) add_snell_server_config ;;
         6) add_shadowquic_server_config ;;
         7) add_anytls_all_modes_server_config ;;
+        8) add_xhttp_all_modes_server_config ;;
         0) exit 0 ;;
         *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
     esac
