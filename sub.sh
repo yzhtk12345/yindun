@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完美对齐 xhttp-h3 的 SHA-256 指纹参数与 Mihomo 格式）
+# Description: 本地订阅分发守护进程（完整集成各协议生成与 xhttp-h3 证书指纹）
 # ==============================================================================
 
 RED="\033[31m"
@@ -317,7 +317,6 @@ if os.path.exists(nodes_db):
       password: "{password}" """)
 
             # H. XHTTP 五大变体
-            # 1. XHTTP-Reality
             elif node_type == "xhttp-reality":
                 name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
                 ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
@@ -342,7 +341,6 @@ if os.path.exists(nodes_db):
       support-x25519mlkem768: false""")
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
 
-            # 2. XHTTP-ShadowTLS
             elif node_type == "xhttp-shadowtls":
                 name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -368,7 +366,6 @@ if os.path.exists(nodes_db):
       password: "{password}"
       servername: "{domain}" """)
 
-            # 3. XHTTP-ResTLS
             elif node_type == "xhttp-restls":
                 name = parts.get("NAME", "xhttp-rtls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -392,7 +389,6 @@ if os.path.exists(nodes_db):
       password: "{password}"
       version-hint: "tls13" """)
 
-            # 4. XHTTP-JLS
             elif node_type == "xhttp-jls":
                 name = parts.get("NAME", "xhttp-jls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -416,10 +412,10 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # 5. XHTTP-H3-UDP -> 带真实的自签证书指纹 pinSHA256 注入通用明文订阅链接
+            # 5. XHTTP-H3-UDP -> 完美对接 quic 传输、指纹 pinSHA256 校验
             elif node_type == "xhttp-h3":
                 name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
-                ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "speed.cloudflare.com")
+                ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "cloudflare.com")
                 fingerprint = parts.get("FINGERPRINT", "")
                 mi_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
@@ -427,7 +423,7 @@ if os.path.exists(nodes_db):
     server: {ip}
     port: {port_val}
     uuid: {uuid}
-    network: xhttp
+    network: quic
     tls: true
     udp: true
     skip-cert-verify: false
@@ -437,10 +433,10 @@ if os.path.exists(nodes_db):
     alpn:
       - h3
     xhttp-opts:
-      path: "/yindun-xh3"
+      path: "yindun-xh3"
       host: "{domain}"
-      mode: "packet-up" """)
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pinSHA256={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=%2Fyindun-xh3&mode=packet-up#{urllib.parse.quote(name)}")
+      mode: "auto" """)
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pinSHA256={fingerprint}&fp=chrome&type=quic&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
@@ -577,7 +573,7 @@ start_daemon() {
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
     prepare_python_server
-    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
+    manage_firewall_port "add" "$web_port" "tcp" "YinDun-Sub-${web_port}"
     local server_ip
     server_ip=$(get_public_ip)
 
@@ -596,5 +592,5 @@ start_daemon() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    start_daemon
+    start_daemon()
 fi
