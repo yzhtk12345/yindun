@@ -573,7 +573,7 @@ start_daemon() {
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
     prepare_python_server
-    manage_firewall_port "add" "$web_port" "tcp" "YinDun-Sub-${web_port}"
+    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
     local server_ip
     server_ip=$(get_public_ip)
 
@@ -592,5 +592,5 @@ start_daemon() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    start_daemon()
+    start_daemon
 fi
