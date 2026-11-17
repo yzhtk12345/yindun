@@ -735,9 +735,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置完成！${NC}"
 }
 
-# ==============================================================================
-# 8. XHTTP 系列节点 (多域名不重复原则：Reality, Shadow-TLS, ResTLS, JLS, H3-UDP)
-# ==============================================================================
+# 8. XHTTP 系列节点 (带 xhttp-h3 独立自签证书与 SHA-256 指纹自动生成)
 add_xhttp_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -756,7 +754,6 @@ add_xhttp_all_modes_server_config() {
     local mihomo_bin="${CONFIG_DIR}/mihomo"
     [ ! -x "$mihomo_bin" ] && echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件！${NC}" && return 1
 
-    # 严格遵循多域名不重复原则，为各个 XHTTP 变体挑选互不相同的优质官方/大厂分发域名作为掩护
     echo -e "${CYAN}[INFO] 正在为 XHTTP-Reality 优选伪装域名...${NC}"
     local x_dom_reality
     x_dom_reality=$(select_best_domain_from_list "gateway.icloud.com" "gateway.icloud.com" "dl.google.com")
@@ -777,10 +774,18 @@ add_xhttp_all_modes_server_config() {
     local x_dom_h3
     x_dom_h3=$(select_best_domain_from_list "speed.cloudflare.com" "speed.cloudflare.com" "cloudflare.com")
 
+    # 为 xhttp-h3 生成专属自签证书
+    local cert_dir="${CONFIG_DIR}/cert"
+    mkdir -p "$cert_dir"
+    local h3_crt="${cert_dir}/xhttp_h3.crt"
+    local h3_key="${cert_dir}/xhttp_h3.key"
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$h3_key" -out "$h3_crt" -days 3650 -subj "/CN=${x_dom_h3}" 2>/dev/null
+    local h3_fingerprint
+    h3_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$h3_crt" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
+
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
-    # 自动分配 5 个独立端口
     echo -e "${CYAN}[INFO] 正在为 5 种 XHTTP 变体自动分配端口...${NC}"
     local p_xr p_xst p_xrt p_xj p_xh3
     p_xr=$(get_available_port "auto" "")
@@ -789,21 +794,18 @@ add_xhttp_all_modes_server_config() {
     p_xj=$(get_available_port "auto" "")
     p_xh3=$(get_available_port "auto" "")
 
-    # 放行防火墙端口 (前4个TCP，第5个H3独占UDP)
     manage_firewall_port "add" "$p_xr" "tcp" "YinDun-XHTTP-Reality-${p_xr}"
     manage_firewall_port "add" "$p_xst" "tcp" "YinDun-XHTTP-ShadowTLS-${p_xst}"
     manage_firewall_port "add" "$p_xrt" "tcp" "YinDun-XHTTP-ResTLS-${p_xrt}"
     manage_firewall_port "add" "$p_xj" "tcp" "YinDun-XHTTP-JLS-${p_xj}"
     manage_firewall_port "add" "$p_xh3" "udp" "YinDun-XHTTP-H3-${p_xh3}"
 
-    # 生成 Reality 密钥对
     local kp_xr priv_xr pub_xr sid_xr
     kp_xr=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
     priv_xr=$(echo "$kp_xr" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
     pub_xr=$(echo "$kp_xr" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
     sid_xr=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
 
-    # 生成各节点通用或独立凭据
     local uuid_base uuid_stls uuid_rtls uuid_jls uuid_h3
     uuid_base=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     uuid_stls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
@@ -822,19 +824,18 @@ add_xhttp_all_modes_server_config() {
     local name_xj="xhttp-jls-in-${host_name}"
     local name_xh3="xhttp-h3-in-${host_name}"
 
-    # 写入总账本记录 (带上各自独立的域名标记)
     local r_xr="TYPE=xhttp-reality|NAME=${name_xr}|PORT=${p_xr}|UUID=${uuid_base}|PRIV=${priv_xr}|PUB=${pub_xr}|SHORTID=${sid_xr}|DOMAIN=${x_dom_reality}|IP=${server_ip}"
     local r_xst="TYPE=xhttp-shadowtls|NAME=${name_xst}|PORT=${p_xst}|UUID=${uuid_stls}|PASS=${stls_pass}|DEST=${x_dom_stls}:443|IP=${server_ip}"
     local r_xrt="TYPE=xhttp-restls|NAME=${name_xrt}|PORT=${p_xrt}|UUID=${uuid_rtls}|PASS=${restls_pass}|DEST=${x_dom_rtls}:443|IP=${server_ip}"
     local r_xj="TYPE=xhttp-jls|NAME=${name_xj}|PORT=${p_xj}|UUID=${uuid_jls}|PASS=${jls_pass}|DEST=${x_dom_jls}:443|SNI=${x_dom_jls}|IP=${server_ip}"
-    local r_xh3="TYPE=xhttp-h3|NAME=${name_xh3}|PORT=${p_xh3}|UUID=${uuid_h3}|DOMAIN=${x_dom_h3}|IP=${server_ip}"
+    local r_xh3="TYPE=xhttp-h3|NAME=${name_xh3}|PORT=${p_xh3}|UUID=${uuid_h3}|DOMAIN=${x_dom_h3}|FINGERPRINT=${h3_fingerprint}|CRT=${h3_crt}|KEY=${h3_key}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" \
         "$name_xr" "$p_xr" "$uuid_base" "$x_dom_reality" "$priv_xr" "$pub_xr" "$sid_xr" "$r_xr" \
         "$name_xst" "$p_xst" "$uuid_stls" "$stls_pass" "$x_dom_stls" "$r_xst" \
         "$name_xrt" "$p_xrt" "$uuid_rtls" "$restls_pass" "$x_dom_rtls" "$r_xrt" \
         "$name_xj" "$p_xj" "$uuid_jls" "$jls_pass" "$x_dom_jls" "$r_xj" \
-        "$name_xh3" "$p_xh3" "$uuid_h3" "$x_dom_h3" "$r_xh3" << 'PY_EOF'
+        "$name_xh3" "$p_xh3" "$uuid_h3" "$x_dom_h3" "$h3_crt" "$h3_key" "$r_xh3" << 'PY_EOF'
 import sys, os, yaml
 args = sys.argv[1:]
 config_path, nodes_db = args[0], args[1]
@@ -843,7 +844,7 @@ n_xr, p_xr, u_xr, d_xr, priv, pub, sid, rec_xr = args[2:10]
 n_xst, p_xst, u_xst, pw_stls, d_stls, rec_xst = args[10:16]
 n_xrt, p_xrt, u_xrt, pw_rtls, d_rtls, rec_xrt = args[16:22]
 n_xj, p_xj, u_xj, pw_jls, d_jls, rec_xj = args[22:28]
-n_xh3, p_xh3, u_xh3, d_h3, rec_xh3 = args[28:33]
+n_xh3, p_xh3, u_xh3, d_h3, h3_crt, h3_key, rec_xh3 = args[28:35]
 
 xhttp_names = {n_xr, n_xst, n_xrt, n_xj, n_xh3}
 new_records = [rec_xr, rec_xst, rec_xrt, rec_xj, rec_xh3]
@@ -868,7 +869,6 @@ if os.path.exists(config_path):
             listeners = [l for l in loaded["listeners"] if l.get("name") not in xhttp_names]
     except: pass
 
-# 1. VLESS XHTTP Reality
 listeners.append({
     "name": n_xr, "type": "vless", "port": int(p_xr), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xr, "flow": ""}],
@@ -876,7 +876,6 @@ listeners.append({
     "reality-config": {"dest": f"{d_xr}:443", "private-key": priv, "short-id": [sid], "server-names": [d_xr]}
 })
 
-# 2. VLESS XHTTP Shadow-TLS
 listeners.append({
     "name": n_xst, "type": "vless", "port": int(p_xst), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xst, "flow": ""}],
@@ -884,7 +883,6 @@ listeners.append({
     "shadow-tls": {"enable": True, "version": 3, "users": [{"name": "1", "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}
 })
 
-# 3. VLESS XHTTP Res-TLS
 listeners.append({
     "name": n_xrt, "type": "vless", "port": int(p_xrt), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xrt, "flow": ""}],
@@ -892,7 +890,6 @@ listeners.append({
     "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}
 })
 
-# 4. VLESS XHTTP JLS
 listeners.append({
     "name": n_xj, "type": "vless", "port": int(p_xj), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xj, "flow": ""}],
@@ -900,13 +897,14 @@ listeners.append({
     "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}
 })
 
-# 5. VLESS XHTTP H3 (UDP 端口 + HTTP/3 传输)
 listeners.append({
     "name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xh3, "flow": ""}],
     "network": "quic",
     "xhttp-config": {"path": "/yindun-xh3", "host": d_h3, "mode": "packet-up"},
-    "alpn": ["h3"]
+    "alpn": ["h3"],
+    "certificate": h3_crt,
+    "private-key": h3_key
 })
 
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
@@ -916,11 +914,6 @@ PY_EOF
 
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] XHTTP 5大变体服务端入站配置已全部写入并成功重启！${NC}"
-    echo -e " 1. XHTTP-Reality 端口   : ${YELLOW}${p_xr}${NC} (多域名: ${x_dom_reality})"
-    echo -e " 2. XHTTP-ShadowTLS 端口 : ${YELLOW}${p_xst}${NC} (多域名: ${x_dom_stls})"
-    echo -e " 3. XHTTP-ResTLS 端口    : ${YELLOW}${p_xrt}${NC} (多域名: ${x_dom_rtls})"
-    echo -e " 4. XHTTP-JLS 端口       : ${YELLOW}${p_xj}${NC} (多域名: ${x_dom_jls})"
-    echo -e " 5. XHTTP-H3-UDP 端口    : ${YELLOW}${p_xh3}${NC} (多域名: ${x_dom_h3})"
 }
 
 show_menu() {
