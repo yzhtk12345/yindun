@@ -33,7 +33,7 @@ check_and_install_python() {
         if command -v apt-get &>/dev/null; then
             apt-get update -y && apt-get install -y python3 python3-yaml &>/dev/null
         elif command -v yum &>/dev/null; then
-            yum install -y yum install -y python3 python3-PyYAML &>/dev/null || yum install -y python3 python3-yaml &>/dev/null || true
+            yum install -y python3 python3-PyYAML &>/dev/null || yum install -y python3 python3-yaml &>/dev/null || true
         fi
     fi
 }
@@ -735,7 +735,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置完成！${NC}"
 }
 
-# 8. XHTTP 系列节点 (带 xhttp-h3 独立自签证书与 SHA-256 指纹自动生成)
+# 8. XHTTP 系列节点 (带 xhttp-h3 独立自签证书与 SHA-256 指纹自动生成 - 完美对齐 network: xhttp 与 mode: auto)
 add_xhttp_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -784,7 +784,7 @@ add_xhttp_all_modes_server_config() {
     h3_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$h3_crt" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
     local server_ip
-    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+    server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "45.207.156.146")
 
     echo -e "${CYAN}[INFO] 正在为 5 种 XHTTP 变体自动分配端口...${NC}"
     local p_xr p_xst p_xrt p_xj p_xh3
@@ -897,11 +897,11 @@ listeners.append({
     "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}
 })
 
-# 修复：xhttp-h3 入站绑定正确的 quic 传输、自签证书路径以及正确的 path
+# 完美对齐：xhttp-h3 入站采用 network: xhttp 配合 mode: auto 以及标准 path
 listeners.append({
     "name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xh3, "flow": ""}],
-    "network": "quic",
+    "network": "xhttp",
     "xhttp-config": {"path": "yindun-xh3", "host": d_h3, "mode": "auto"},
     "alpn": ["h3"],
     "certificate": h3_crt,
