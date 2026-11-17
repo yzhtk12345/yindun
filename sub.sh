@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 专注重点排查和修复 xhttp-h3 节点（Mihomo 参数与通用 SHA-256 证书指纹）
+# Description: 本地订阅分发守护进程（完美对齐 xhttp-h3 的 SHA-256 指纹参数与 Mihomo 格式）
 # ==============================================================================
 
 RED="\033[31m"
@@ -108,7 +108,7 @@ stop_daemon() {
 
 prepare_subscription_generator() {
     cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
-import os, urllib.parse, json, subprocess
+import os, urllib.parse, json
 
 config_dir = os.path.dirname(os.path.abspath(__file__))
 nodes_db = os.path.join(config_dir, "all_nodes.txt")
@@ -416,10 +416,11 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # 5. XHTTP-H3-UDP -> 修复：精准对齐 Mihomo QUIC 传输结构，并在通用明文链接中带上标准格式
+            # 5. XHTTP-H3-UDP -> 带真实的自签证书指纹 pinSHA256 注入通用明文订阅链接
             elif node_type == "xhttp-h3":
                 name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
                 ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "speed.cloudflare.com")
+                fingerprint = parts.get("FINGERPRINT", "")
                 mi_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: vless
@@ -429,7 +430,8 @@ if os.path.exists(nodes_db):
     network: xhttp
     tls: true
     udp: true
-    skip-cert-verify: true
+    skip-cert-verify: false
+    fingerprint: {fingerprint}
     client-fingerprint: chrome
     servername: {domain}
     alpn:
@@ -438,7 +440,7 @@ if os.path.exists(nodes_db):
       path: "/yindun-xh3"
       host: "{domain}"
       mode: "packet-up" """)
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&allowInsecure=1&fp=chrome&type=xhttp&host={domain}&path=%2Fyindun-xh3&mode=packet-up#{urllib.parse.quote(name)}")
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pinSHA256={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=%2Fyindun-xh3&mode=packet-up#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
