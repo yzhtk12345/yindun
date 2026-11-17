@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（修复 XHTTP-ShadowTLS 的 TLS 冲突与 XHTTP-H3 的自签信任问题）
+# Description: 本地订阅分发守护进程（完美修复 ShadowTLS 的 TLS 要求，兼容所有变体）
 # ==============================================================================
 
 RED="\033[31m"
@@ -316,7 +316,7 @@ if os.path.exists(nodes_db):
       username: "{username}"
       password: "{password}" """)
 
-            # H. XHTTP 五大变体（修复 Shadow-TLS 的 TLS 冲突与 H3 的自签信任）
+            # H. XHTTP 五大变体
             # 1. XHTTP-Reality -> Mihomo + 通用订阅
             elif node_type == "xhttp-reality":
                 name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
@@ -342,7 +342,7 @@ if os.path.exists(nodes_db):
       support-x25519mlkem768: false""")
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
 
-            # 2. XHTTP-ShadowTLS -> 修复：去掉冲突的 tls: true，改用 shadow-tls 专属安全外壳
+            # 2. XHTTP-ShadowTLS -> 修复：恢复 tls: true，使 Mihomo 正常通过 Shadow-TLS 校验
             elif node_type == "xhttp-shadowtls":
                 name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -355,16 +355,16 @@ if os.path.exists(nodes_db):
     port: {port_val}
     uuid: {uuid}
     network: xhttp
-    tls: false
+    tls: true
     udp: true
+    servername: {domain}
     xhttp-opts:
       path: "/yindun-xst"
       host: "{domain}"
       mode: "stream-up"
     shadow-tls-opts:
       version: 3
-      password: "{password}"
-      servername: "{domain}" """)
+      password: "{password}" """)
 
             # 3. XHTTP-ResTLS -> 仅 Mihomo
             elif node_type == "xhttp-restls":
@@ -414,7 +414,7 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # 5. XHTTP-H3-UDP -> 修复：加上 skip-cert-verify: true 解决自签证书 QUIC 握手失败问题
+            # 5. XHTTP-H3-UDP -> Mihomo + 通用订阅
             elif node_type == "xhttp-h3":
                 name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
                 ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "speed.cloudflare.com")
@@ -591,5 +591,5 @@ start_daemon() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    start_daemon
+    start_daemon()
 fi
