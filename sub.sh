@@ -426,14 +426,14 @@ if os.path.exists(nodes_db):
     network: xhttp
     tls: true
     udp: true
-    skip-cert-verify: false
+    skip-cert-verify: true
     fingerprint: {fingerprint}
     client-fingerprint: chrome
     servername: {domain}
     alpn:
       - h3
     xhttp-opts:
-      path: "yindun-xh3"
+      path: "/yindun-xh3"
       host: "{domain}"
       mode: "auto" """)
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pcs={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
