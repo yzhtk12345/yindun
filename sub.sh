@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完美修复 ShadowTLS 的 TLS 要求，兼容所有变体）
+# Description: 本地订阅分发守护进程（语法修复版，完美支持所有节点变体）
 # ==============================================================================
 
 RED="\033[31m"
@@ -591,5 +591,5 @@ start_daemon() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    start_daemon()
+    start_daemon
 fi
