@@ -33,7 +33,7 @@ check_and_install_python() {
         if command -v apt-get &>/dev/null; then
             apt-get update -y && apt-get install -y python3 python3-yaml &>/dev/null
         elif command -v yum &>/dev/null; then
-            yum install -y python3 python3-PyYAML &>/dev/null
+            yum install -y yum install -y python3 python3-PyYAML &>/dev/null || yum install -y python3 python3-yaml &>/dev/null || true
         fi
     fi
 }
@@ -772,7 +772,7 @@ add_xhttp_all_modes_server_config() {
 
     echo -e "${CYAN}[INFO] 正在为 XHTTP-H3-UDP 优选云服务CDN域名...${NC}"
     local x_dom_h3
-    x_dom_h3=$(select_best_domain_from_list "speed.cloudflare.com" "speed.cloudflare.com" "cloudflare.com")
+    x_dom_h3=$(select_best_domain_from_list "cloudflare.com" "cloudflare.com" "speed.cloudflare.com")
 
     # 为 xhttp-h3 生成专属自签证书
     local cert_dir="${CONFIG_DIR}/cert"
@@ -897,11 +897,12 @@ listeners.append({
     "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}
 })
 
+# 修复：xhttp-h3 入站绑定正确的 quic 传输、自签证书路径以及正确的 path
 listeners.append({
     "name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": u_xh3, "flow": ""}],
     "network": "quic",
-    "xhttp-config": {"path": "/yindun-xh3", "host": d_h3, "mode": "packet-up"},
+    "xhttp-config": {"path": "yindun-xh3", "host": d_h3, "mode": "auto"},
     "alpn": ["h3"],
     "certificate": h3_crt,
     "private-key": h3_key
