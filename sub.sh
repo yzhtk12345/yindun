@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（AnyTLS 标准通用订阅参数完全对齐官方标准）
+# Description: 本地订阅分发守护进程（严格对齐：XHTTP 仅 Mihomo 全量 + 通用仅 Reality/H3，Sing-box 剔除 XHTTP）
 # ==============================================================================
 
 RED="\033[31m"
@@ -259,7 +259,7 @@ if os.path.exists(nodes_db):
     congestion-controller: bbr""")
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-            # G. AnyTLS (标准通用链接完美对齐标准参数：insecure=1&security=tls&type=tcp&headerType=none)
+            # G. AnyTLS 四大模式
             elif node_type == "anytls":
                 name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
                 mode = parts.get("MODE", "standard")
@@ -276,7 +276,6 @@ if os.path.exists(nodes_db):
     password: "{password}"
     skip-cert-verify: true
     udp: true""")
-                    # 对齐标准 AnyTLS 通用分享链接格式
                     box_node_names.append(name)
                     box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
                     all_links.append(f"anytls://{password}@{ip}:{port_val}?insecure=1&security=tls&type=tcp&headerType=none#{urllib.parse.quote(name)}")
@@ -316,6 +315,127 @@ if os.path.exists(nodes_db):
     jls-opts:
       username: "{username}"
       password: "{password}" """)
+
+            # H. XHTTP 五大变体（Sing-box 全部跳过；Mihomo 全部加入；通用订阅仅加入 xhttp-reality 与 xhttp-h3）
+            # 1. XHTTP-Reality -> Mihomo + 通用订阅
+            elif node_type == "xhttp-reality":
+                name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
+                ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    client-fingerprint: chrome
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xr"
+      host: "{domain}"
+      mode: "stream-up"
+    reality-opts:
+      public-key: {pub}
+      short-id: {shortid}
+      support-x25519mlkem768: false""")
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
+
+            # 2. XHTTP-ShadowTLS -> 仅 Mihomo
+            elif node_type == "xhttp-shadowtls":
+                name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
+                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "download.nvidia.com:443")
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xst"
+      host: "{domain}"
+      mode: "stream-up"
+    shadow-tls-opts:
+      version: 3
+      password: "{password}" """)
+
+            # 3. XHTTP-ResTLS -> 仅 Mihomo
+            elif node_type == "xhttp-restls":
+                name = parts.get("NAME", "xhttp-rtls-node").replace("-in-", "-out-")
+                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "cdn.akamai.steamstatic.com:443")
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xrt"
+      host: "{domain}"
+      mode: "stream-up"
+    restls-opts:
+      password: "{password}"
+      version-hint: "tls13" """)
+
+            # 4. XHTTP-JLS -> 仅 Mihomo
+            elif node_type == "xhttp-jls":
+                name = parts.get("NAME", "xhttp-jls-node").replace("-in-", "-out-")
+                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "update.code.visualstudio.com:443")
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xj"
+      host: "{domain}"
+      mode: "stream-up"
+    jls-opts:
+      username: "1"
+      password: "{password}" """)
+
+            # 5. XHTTP-H3-UDP -> Mihomo + 通用订阅
+            elif node_type == "xhttp-h3":
+                name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
+                ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "speed.cloudflare.com")
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    skip-cert-verify: true
+    servername: {domain}
+    alpn:
+      - h3
+    xhttp-opts:
+      path: "/yindun-xh3"
+      host: "{domain}"
+      mode: "packet-up" """)
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&allowInsecure=1&type=xhttp&host={domain}&path=%2Fyindun-xh3&mode=packet-up#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
