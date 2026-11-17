@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完美修复 XHTTP-H3 证书指纹/SHA256 与 ShadowTLS 握手）
+# Description: 专注重点排查和修复 xhttp-h3 节点（Mihomo 参数与通用 SHA-256 证书指纹）
 # ==============================================================================
 
 RED="\033[31m"
@@ -108,7 +108,7 @@ stop_daemon() {
 
 prepare_subscription_generator() {
     cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
-import os, urllib.parse, json
+import os, urllib.parse, json, subprocess
 
 config_dir = os.path.dirname(os.path.abspath(__file__))
 nodes_db = os.path.join(config_dir, "all_nodes.txt")
@@ -317,7 +317,7 @@ if os.path.exists(nodes_db):
       password: "{password}" """)
 
             # H. XHTTP 五大变体
-            # 1. XHTTP-Reality -> Mihomo + 通用订阅
+            # 1. XHTTP-Reality
             elif node_type == "xhttp-reality":
                 name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
                 ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
@@ -342,7 +342,7 @@ if os.path.exists(nodes_db):
       support-x25519mlkem768: false""")
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
 
-            # 2. XHTTP-ShadowTLS -> 修复：补全完整的 client-fingerprint 和 shadow-tls 客户端结构
+            # 2. XHTTP-ShadowTLS
             elif node_type == "xhttp-shadowtls":
                 name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -368,7 +368,7 @@ if os.path.exists(nodes_db):
       password: "{password}"
       servername: "{domain}" """)
 
-            # 3. XHTTP-ResTLS -> 仅 Mihomo
+            # 3. XHTTP-ResTLS
             elif node_type == "xhttp-restls":
                 name = parts.get("NAME", "xhttp-rtls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -392,7 +392,7 @@ if os.path.exists(nodes_db):
       password: "{password}"
       version-hint: "tls13" """)
 
-            # 4. XHTTP-JLS -> 仅 Mihomo
+            # 4. XHTTP-JLS
             elif node_type == "xhttp-jls":
                 name = parts.get("NAME", "xhttp-jls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -416,7 +416,7 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # 5. XHTTP-H3-UDP -> 修复：Mihomo 补全 client-fingerprint: chrome，通用订阅补全 pinSHA256 占位及安全参数
+            # 5. XHTTP-H3-UDP -> 修复：精准对齐 Mihomo QUIC 传输结构，并在通用明文链接中带上标准格式
             elif node_type == "xhttp-h3":
                 name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
                 ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "speed.cloudflare.com")
