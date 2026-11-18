@@ -509,10 +509,52 @@ EOF
 start_daemon() {
     [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
     stop_daemon
-    [ ! -f "${CONFIG_DIR}/sub_token.txt" ] && openssl rand -hex 32 > "${CONFIG_DIR}/sub_token.txt"
 
-    local web_port=$(get_web_port)
-    local SUB_TOKEN=$(cat "${CONFIG_DIR}/sub_token.txt")
+    # 1. 处理订阅端口 (web_port)
+    local web_port=""
+    if [ -f "$PORT_RECORD_FILE" ]; then
+        local old_port
+        old_port=$(cat "$PORT_RECORD_FILE")
+        if [[ -n "$old_port" ]]; then
+            echo -e "${YELLOW}[INFO] 检测到已存在历史订阅端口: ${CYAN}${old_port}${NC}"
+            read -p "是否使用现有端口？[Y/n] (默认回车使用现有): " choice_port
+            [[ -z "$choice_port" ]] && choice_port="y"
+            if [[ "$choice_port" == "y" || "$choice_port" == "Y" ]]; then
+                web_port="$old_port"
+            fi
+        fi
+    fi
+
+    if [ -z "$web_port" ]; then
+        cleanup_old_sub_firewall_rules
+        while true; do
+            web_port=$((RANDOM % 10001 + 10000))
+            ! check_port_used "$web_port" && break
+        done
+        echo "$web_port" > "$PORT_RECORD_FILE"
+        echo -e "${GREEN}[INFO] 已生成并记录新的订阅端口: ${web_port}${NC}"
+    fi
+
+    # 2. 处理 Token
+    local SUB_TOKEN=""
+    if [ -f "$TOKEN_FILE" ]; then
+        local old_token
+        old_token=$(cat "$TOKEN_FILE")
+        if [[ -n "$old_token" ]]; then
+            echo -e "${YELLOW}[INFO] 检测到已存在历史 Token: ${CYAN}${old_token}${NC}"
+            read -p "是否使用现有 Token？[Y/n] (默认回车使用现有): " choice_token
+            [[ -z "$choice_token" ]] && choice_token="y"
+            if [[ "$choice_token" == "y" || "$choice_token" == "Y" ]]; then
+                SUB_TOKEN="$old_token"
+            fi
+        fi
+    fi
+
+    if [ -z "$SUB_TOKEN" ]; then
+        SUB_TOKEN=$(openssl rand -hex 32)
+        echo "$SUB_TOKEN" > "$TOKEN_FILE"
+        echo -e "${GREEN}[INFO] 已生成并记录新的 Token${NC}"
+    fi
 
     cleanup_old_sub_firewall_rules
     prepare_subscription_generator
