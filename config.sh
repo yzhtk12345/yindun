@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS、XHTTP 及纯净 Argo 443 TLS 隧道单栈管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS、XHTTP 及 Argo 临时隧道双栈节点管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -710,27 +710,39 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
 }
 
-# 9. Argo 纯净 TLS 单隧道核心逻辑（精准对齐 name: argo-wstls-in-hk2t 结构）
-launch_argo_tunnel() {
-    local p_wstls="$1"
+# 9. Argo 临时隧道双节点核心逻辑
+launch_argo_tunnels() {
+    local p_ws="$1"
+    local p_wstls="$2"
     local cf_bin="${CONFIG_DIR}/cloudflared"
+    local log_ws="${CONFIG_DIR}/argo_ws.log"
     local log_wstls="${CONFIG_DIR}/argo_wstls.log"
+    local pid_ws="${CONFIG_DIR}/argo_ws.pid"
     local pid_wstls="${CONFIG_DIR}/argo_wstls.pid"
 
-    [ -f "$pid_wstls" ] && kill -9 "$(cat "$pid_wstls")" 2>/dev/null && rm -f "$pid_wstls"
+    for pf in "$pid_ws" "$pid_wstls"; do
+        [ -f "$pf" ] && kill -9 "$(cat "$pf")" 2>/dev/null && rm -f "$pf"
+    done
+
+    > "$log_ws"
     > "$log_wstls"
+
+    nohup "$cf_bin" tunnel --url "http://127.0.0.1:${p_ws}" --no-autoupdate > "$log_ws" 2>&1 &
+    echo $! > "$pid_ws"
 
     nohup "$cf_bin" tunnel --url "https://127.0.0.1:${p_wstls}" --no-tls-verify --no-autoupdate > "$log_wstls" 2>&1 &
     echo $! > "$pid_wstls"
 
-    local dom_wstls=""
+    local dom_ws="" dom_wstls=""
     for _ in $(seq 1 20); do
         sleep 1
-        dom_wstls=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$log_wstls" 2>/dev/null | head -n 1 | sed 's|https://||')
-        [[ -n "$dom_wstls" ]] && break
+        [ -z "$dom_ws" ] && dom_ws=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$log_ws" 2>/dev/null | head -n 1 | sed 's|https://||')
+        [ -z "$dom_wstls" ] && dom_wstls=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$log_wstls" 2>/dev/null | head -n 1 | sed 's|https://||')
+        [[ -n "$dom_ws" && -n "$dom_wstls" ]] && break
     done
 
-    [[ -z "$dom_wstls" ]] && return 1
+    [[ -z "$dom_ws" || -z "$dom_wstls" ]] && return 1
+    ARGO_DOMAIN_WS="$dom_ws"
     ARGO_DOMAIN_WSTLS="$dom_wstls"
     return 0
 }
@@ -739,24 +751,26 @@ add_argo_ws_server_config() {
     check_and_install_python
     check_and_install_dependencies
     check_and_install_cloudflared || return 1
+    local host_name=$(hostname)
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}  开始配置并写入 Argo 纯净 443 TLS 隧道 (argo-wstls-in-hk2t) ${NC}"
+    echo -e "${CYAN}  开始配置并写入 Argo 临时隧道双节点 (WS + WS-TLS)      ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定(默认推荐 38187)] (默认 2): " port_mode_choice
-    local port_mode="manual" manual_wstls="38187"
-    if [[ "$port_mode_choice" == "1" ]]; then
-        port_mode="auto"
-        manual_wstls=""
-    else
-        read -p "请输入本地端口 [默认 38187]: " input_p
-        [[ -n "$input_p" ]] && manual_wstls="$input_p"
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_ws="" manual_wstls=""
+    if [[ "$port_mode_choice" == "2" ]]; then
+        port_mode="manual"
+        read -p "请输入 VLESS-WS 本地端口 [20000-60000]: " manual_ws
+        read -p "请输入 VLESS-WS-TLS 本地端口 [20000-60000]: " manual_wstls
     fi
 
+    local p_ws=$(get_available_port "$port_mode" "$manual_ws")
+    [[ -z "$p_ws" ]] && return 1
     local p_wstls=$(get_available_port "$port_mode" "$manual_wstls")
     [[ -z "$p_wstls" ]] && return 1
 
+    local uuid_ws=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     local uuid_wstls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
 
     local cert_dir="${CONFIG_DIR}/cert"
@@ -764,32 +778,21 @@ add_argo_ws_server_config() {
     local argo_crt="${cert_dir}/argo_wstls.crt" argo_key="${cert_dir}/argo_wstls.key"
     openssl req -x509 -nodes -newkey rsa:2048 -keyout "$argo_key" -out "$argo_crt" -days 3650 -subj "/CN=argo.trycloudflare.com" 2>/dev/null
 
-    local node_name="argo-wstls-in-hk2t"
+    local name_ws="argo-ws-in-${host_name}"
+    local name_wstls="argo-wstls-in-${host_name}"
 
-    python3 - "$CONFIG_FILE" "$node_name" "$p_wstls" "$uuid_wstls" "$argo_crt" "$argo_key" << 'PY_EOF'
+    python3 - "$CONFIG_FILE" "$name_ws" "$p_ws" "$uuid_ws" "$name_wstls" "$p_wstls" "$uuid_wstls" "$argo_crt" "$argo_key" << 'PY_EOF'
 import sys, os, yaml
-config_path, name, port, uuid, crt, key = sys.argv[1:7]
+config_path, n_ws, p_ws, u_ws, n_wstls, p_wstls, u_wstls, crt, key = sys.argv[1:10]
 listeners = []
 if os.path.exists(config_path):
     try:
         loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            # 清除旧的 argo ws 或 wstls 节点避免冲突
-            listeners = [l for l in loaded["listeners"] if l.get("name") not in {name, "argo-ws-in-hk2t", "argo-wstls-in-hk2t"}]
+            listeners = [l for l in loaded["listeners"] if l.get("name") not in {n_ws, n_wstls}]
     except: pass
-
-listeners.append({
-    "name": name,
-    "type": "vless",
-    "port": int(port),
-    "listen": "127.0.0.1",
-    "users": [{"username": "1", "uuid": uuid, "flow": ""}],
-    "network": "ws",
-    "ws-config": {"path": "/yindun-argo-wstls"},
-    "certificate": crt,
-    "private-key": key
-})
-
+listeners.append({"name": n_ws, "type": "vless", "port": int(p_ws), "listen": "127.0.0.1", "users": [{"username": "1", "uuid": u_ws, "flow": ""}], "network": "ws", "ws-config": {"path": "/yindun-argo-ws"}})
+listeners.append({"name": n_wstls, "type": "vless", "port": int(p_wstls), "listen": "127.0.0.1", "users": [{"username": "1", "uuid": u_wstls, "flow": ""}], "network": "ws", "ws-config": {"path": "/yindun-argo-wstls"}, "certificate": crt, "private-key": key})
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
@@ -798,43 +801,47 @@ PY_EOF
     systemctl restart mihomo
     sleep 1
 
-    launch_argo_tunnel "$p_wstls" || return 1
+    launch_argo_tunnels "$p_ws" "$p_wstls" || return 1
 
-    # 数据库记录格式更新
-    local r_wstls="TYPE=argo-wstls|NAME=${node_name}|PORT=${p_wstls}|UUID=${uuid_wstls}|DOMAIN=${ARGO_DOMAIN_WSTLS}|PATH=/yindun-argo-wstls"
+    local r_ws="TYPE=argo-ws|NAME=${name_ws}|PORT=${p_ws}|UUID=${uuid_ws}|DOMAIN=${ARGO_DOMAIN_WS}|PATH=/yindun-argo-ws"
+    local r_wstls="TYPE=argo-wstls|NAME=${name_wstls}|PORT=${p_wstls}|UUID=${uuid_wstls}|DOMAIN=${ARGO_DOMAIN_WSTLS}|PATH=/yindun-argo-wstls"
 
-    python3 - "$NODES_DB" "$r_wstls" << 'PY_EOF'
+    python3 - "$NODES_DB" "$r_ws" "$r_wstls" << 'PY_EOF'
 import sys, os
-nodes_db, r_wstls = sys.argv[1:3]
+nodes_db, r_ws, r_wstls = sys.argv[1:4]
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=argo-ws|") and not l.startswith("TYPE=argo-wstls|")] if os.path.exists(nodes_db) else []
-existing.append(r_wstls)
+existing.extend([r_ws, r_wstls])
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 PY_EOF
 
-    echo -e "${GREEN}[SUCCESS] Argo 纯净 443 TLS 隧道 (argo-wstls-in-hk2t) 配置成功！${NC}"
+    echo -e "${GREEN}[SUCCESS] Argo 临时隧道双节点配置成功！${NC}"
 }
 
 # 静默重载 Argo 隧道（供 sub.sh 启动时调用）
 reload_argo_internal() {
     [ ! -f "$NODES_DB" ] && return 1
+    local p_ws=$(grep "^TYPE=argo-ws|" "$NODES_DB" | grep -oP 'PORT=\K[^|]+' | head -n 1)
     local p_wstls=$(grep "^TYPE=argo-wstls|" "$NODES_DB" | grep -oP 'PORT=\K[^|]+' | head -n 1)
-    [[ -z "$p_wstls" ]] && return 1
+    [[ -z "$p_ws" || -z "$p_wstls" ]] && return 1
 
     check_and_install_cloudflared || return 1
     systemctl restart mihomo
     sleep 1
 
-    launch_argo_tunnel "$p_wstls" || return 1
+    launch_argo_tunnels "$p_ws" "$p_wstls" || return 1
 
-    python3 - "$NODES_DB" "$ARGO_DOMAIN_WSTLS" << 'PY_EOF'
+    python3 - "$NODES_DB" "$ARGO_DOMAIN_WS" "$ARGO_DOMAIN_WSTLS" << 'PY_EOF'
 import sys
-nodes_db, new_dom_wstls = sys.argv[1:3]
+nodes_db, new_dom_ws, new_dom_wstls = sys.argv[1:4]
 lines = []
 with open(nodes_db, encoding="utf-8") as f:
     for line in f:
         l = line.strip()
         if not l: continue
-        if l.startswith("TYPE=argo-wstls|"):
+        if l.startswith("TYPE=argo-ws|"):
+            parts = [p if not p.startswith("DOMAIN=") else f"DOMAIN={new_dom_ws}" for p in l.split("|")]
+            l = "|".join(parts)
+        elif l.startswith("TYPE=argo-wstls|"):
             parts = [p if not p.startswith("DOMAIN=") else f"DOMAIN={new_dom_wstls}" for p in l.split("|")]
             l = "|".join(parts)
         lines.append(l)
@@ -855,7 +862,7 @@ show_menu() {
     echo "6. 添加 ShadowQUIC 服务端节点"
     echo "7. 添加 AnyTLS 四大模式服务端节点"
     echo "8. 添加 XHTTP 4大变体服务端节点"
-    echo "9. 添加/重置 Argo 纯净 443 TLS 隧道 (argo-wstls-in-hk2t)"
+    echo "9. 添加/重置 Argo 临时隧道双节点"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
     read -p "请选择操作 [0-9]: " choice
