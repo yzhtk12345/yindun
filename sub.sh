@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（保留完整终端交互确认 + 伴生静默自举）
+# Description: 本地订阅分发守护进程（保留完整终端交互确认 + 伴生静默自举 + Argo保活）
 # ==============================================================================
 
 RED="\033[31m"
@@ -20,6 +20,8 @@ TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
 ARGO_DOMAIN_FILE="${CONFIG_DIR}/argo_domain.txt"
 ARGO_PID_FILE="${CONFIG_DIR}/argo.pid"
 ARGO_LOG_FILE="${CONFIG_DIR}/argo.log"
+ARGO_WATCHDOG_SCRIPT="${CONFIG_DIR}/argo_watchdog.sh"
+ARGO_WATCHDOG_PID="${CONFIG_DIR}/argo_watchdog.pid"
 CLOUDFLARED_BIN="${CONFIG_DIR}/cloudflared"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 BOOT_RUN_SCRIPT="${CONFIG_DIR}/boot_run.sh"
@@ -87,6 +89,13 @@ stop_daemon() {
         kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
         rm -f "$PID_FILE"
     fi
+    if [ -f "$ARGO_WATCHDOG_PID" ]; then
+        local wpid
+        wpid=$(cat "$ARGO_WATCHDOG_PID")
+        kill -0 "$wpid" 2>/dev/null && kill -9 "$wpid" 2>/dev/null
+        rm -f "$ARGO_WATCHDOG_PID"
+    fi
+    pkill -9 -f "argo_watchdog.sh" 2>/dev/null
 }
 
 install_cloudflared() {
@@ -103,6 +112,95 @@ install_cloudflared() {
         curl -L -o "$CLOUDFLARED_BIN" "$url" 2>/dev/null
         chmod +x "$CLOUDFLARED_BIN"
     fi
+}
+
+prepare_argo_watchdog() {
+    cat << 'EOF' > "$ARGO_WATCHDOG_SCRIPT"
+#!/usr/bin/env bash
+CONFIG_DIR="/etc/yindun/mihomo"
+NODES_DB="${CONFIG_DIR}/all_nodes.txt"
+SUBSCRIPTION_GENERATOR="${CONFIG_DIR}/generate_sub.py"
+ARGO_DOMAIN_FILE="${CONFIG_DIR}/argo_domain.txt"
+ARGO_PID_FILE="${CONFIG_DIR}/argo.pid"
+ARGO_LOG_FILE="${CONFIG_DIR}/argo.log"
+CLOUDFLARED_BIN="${CONFIG_DIR}/cloudflared"
+
+while true; do
+    sleep 30
+    [ ! -f "$NODES_DB" ] && continue
+
+    argo_port=""
+    while IFS= read -r line; do
+        if echo "$line" | grep -q "TYPE=argo-wstls|"; then
+            argo_port=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
+            break
+        fi
+    done < "$NODES_DB"
+
+    [ -z "$argo_port" ] && continue
+
+    need_restart=0
+    if [ ! -f "$ARGO_PID_FILE" ]; then
+        need_restart=1
+    else
+        pid=$(cat "$ARGO_PID_FILE")
+        if ! kill -0 "$pid" 2>/dev/null; then
+            need_restart=1
+        fi
+    fi
+
+    # 检查日志中是否出现致命断开错误
+    if [ "$need_restart" -eq 0 ] && [ -f "$ARGO_LOG_FILE" ]; then
+        if tail -n 20 "$ARGO_LOG_FILE" | grep -Eqi "context canceled|failed to connect to origin|ERR.*tunnel|Connection terminated"; then
+            # 确认是否长时间未恢复
+            if ! pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
+                need_restart=1
+            fi
+        fi
+    fi
+
+    if [ "$need_restart" -eq 1 ]; then
+        pkill -9 -f "cloudflared tunnel" 2>/dev/null
+        rm -f "$ARGO_PID_FILE" "$ARGO_DOMAIN_FILE" "$ARGO_LOG_FILE"
+
+        nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate --protocol http2 > "$ARGO_LOG_FILE" 2>&1 &
+        echo $! > "$ARGO_PID_FILE"
+
+        count=0
+        argo_domain=""
+        while [ $count -lt 15 ]; do
+            sleep 2
+            if [ -f "$ARGO_LOG_FILE" ]; then
+                argo_domain=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$ARGO_LOG_FILE" | head -n 1 | sed 's|https://||')
+                if [ -n "$argo_domain" ]; then
+                    echo "$argo_domain" > "$ARGO_DOMAIN_FILE"
+                    # 重新生成订阅文件以更新最新的 trycloudflare 临时域名
+                    if [ -f "$SUBSCRIPTION_GENERATOR" ]; then
+                        cd "$CONFIG_DIR" && python3 "$SUBSCRIPTION_GENERATOR" >/dev/null 2>&1
+                    fi
+                    break
+                fi
+            fi
+            count=$((count + 1))
+        done
+    fi
+done
+EOF
+    chmod +x "$ARGO_WATCHDOG_SCRIPT"
+}
+
+start_argo_watchdog() {
+    if [ -f "$ARGO_WATCHDOG_PID" ]; then
+        local wpid
+        wpid=$(cat "$ARGO_WATCHDOG_PID")
+        kill -0 "$wpid" 2>/dev/null && kill -9 "$wpid" 2>/dev/null
+        rm -f "$ARGO_WATCHDOG_PID"
+    fi
+    pkill -9 -f "argo_watchdog.sh" 2>/dev/null
+
+    prepare_argo_watchdog
+    nohup /bin/bash "$ARGO_WATCHDOG_SCRIPT" >/dev/null 2>&1 &
+    echo $! > "$ARGO_WATCHDOG_PID"
 }
 
 manage_argo_tunnel() {
@@ -644,6 +742,8 @@ TOKEN_FILE="\${CONFIG_DIR}/sub_token.txt"
 ARGO_DOMAIN_FILE="\${CONFIG_DIR}/argo_domain.txt"
 ARGO_PID_FILE="\${CONFIG_DIR}/argo.pid"
 ARGO_LOG_FILE="\${CONFIG_DIR}/argo.log"
+ARGO_WATCHDOG_SCRIPT="\${CONFIG_DIR}/argo_watchdog.sh"
+ARGO_WATCHDOG_PID="\${CONFIG_DIR}/argo_watchdog.pid"
 CLOUDFLARED_BIN="\${CONFIG_DIR}/cloudflared"
 
 [ ! -f "\$NODES_DB" ] && exit 1
@@ -653,6 +753,13 @@ if [ -f "\$PID_FILE" ]; then
     kill -0 "\$pid" 2>/dev/null && kill "\$pid" 2>/dev/null
     rm -f "\$PID_FILE"
 fi
+
+if [ -f "\$ARGO_WATCHDOG_PID" ]; then
+    wpid=\$(cat "\$ARGO_WATCHDOG_PID")
+    kill -0 "\$wpid" 2>/dev/null && kill -9 "\$wpid" 2>/dev/null
+    rm -f "\$ARGO_WATCHDOG_PID"
+fi
+pkill -9 -f "argo_watchdog.sh" 2>/dev/null
 
 web_port=""
 [ -f "\$PORT_RECORD_FILE" ] && web_port=\$(cat "\$PORT_RECORD_FILE")
@@ -698,6 +805,12 @@ if [ -n "\$argo_port" ]; then
         fi
         count=\$((count + 1))
     done
+
+    # 启动 Argo 后台保活守护进程
+    if [ -f "\$ARGO_WATCHDOG_SCRIPT" ]; then
+        nohup /bin/bash "\$ARGO_WATCHDOG_SCRIPT" >/dev/null 2>&1 &
+        echo \$! > "\$ARGO_WATCHDOG_PID"
+    fi
 fi
 
 cd "\$CONFIG_DIR" || exit
@@ -795,6 +908,12 @@ start_daemon() {
     prepare_python_server
     manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
     local server_ip=$(get_public_ip)
+
+    # 启动 Argo 后台保活守护进程（仅在存在 argo-wstls 节点时启动）
+    if grep -q "TYPE=argo-wstls|" "$NODES_DB"; then
+        start_argo_watchdog
+        echo -e "${GREEN}[INFO] 已启动 Argo 隧道后台保活监控 (每30秒检测一次)${NC}"
+    fi
 
     cd "${CONFIG_DIR}" || exit
     nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
