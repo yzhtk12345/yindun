@@ -22,7 +22,6 @@ install_and_verify_warp() {
     echo -e "${CYAN}[INFO] 正在检查并安装 Cloudflare WARP 客户端...${NC}"
     
     if ! command -v warp-cli &>/dev/null; then
-        # 自动添加 Cloudflare 官方源并安装
         if command -v apt-get &>/dev/null; then
             apt-get update -y && apt-get install -y gpg lsb-release curl >/dev/null 2>&1
             curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
@@ -42,7 +41,6 @@ install_and_verify_warp() {
     systemctl enable --now warp-svc >/dev/null 2>&1
     sleep 2
 
-    # 注册 WARP 客户端（如果未注册）
     warp-cli --accept-tos registration new >/dev/null 2>&1 || true
     warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
     warp-cli --accept-tos proxy port 40000 >/dev/null 2>&1 || true
@@ -76,7 +74,6 @@ install_and_verify_warp() {
 set_smart_routing() {
     echo -e "${CYAN}[INFO] 正在配置智能分流规则（AI、流媒体、Telegram、Google 走 WARP）...${NC}"
     
-    # 确保本地 WARP 代理服务已启动
     if ! command -v warp-cli &>/dev/null; then
         echo -e "${YELLOW}[WARN] 检测到未安装 WARP，正在为您自动调用安装...${NC}"
         install_and_verify_warp || return 1
@@ -85,9 +82,8 @@ set_smart_routing() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}[ERROR] 找不到 Mihomo 主配置文件 (${CONFIG_FILE})，请先通过 config.sh 生成节点！${NC}"
         return 1
-    }
+    fi
 
-    # 通过 Python 在 mihomo 的 config.yaml 中注入 WARP 代理及分流策略
     python3 - "$CONFIG_FILE" << 'PY_EOF'
 import sys, yaml
 
@@ -99,7 +95,6 @@ except Exception as e:
     print(f"读取配置文件失败: {e}")
     sys.exit(1)
 
-# 1. 确保 proxies 中包含 warp 本地 SOCKS5 代理
 proxies = data.get("proxies", [])
 warp_proxy = {
     "name": "WARP-SOCKS5",
@@ -112,9 +107,7 @@ if not any(p.get("name") == "WARP-SOCKS5" for p in proxies):
     proxies.append(warp_proxy)
 data["proxies"] = proxies
 
-# 2. 调整代理组，将 WARP 加入可选或专属分组
 proxy_groups = data.get("proxy-groups", [])
-# 检查是否存在或创建专门的 WARP 分流组
 warp_group_exists = False
 for g in proxy_groups:
     if g.get("name") == "🤖AI与流媒体(WARP)":
@@ -130,7 +123,6 @@ if not warp_group_exists:
     })
 data["proxy-groups"] = proxy_groups
 
-# 3. 注入分流规则 (AI, Netflix, Disney, Telegram, Google 走 WARP)
 rules = data.get("rules", [])
 warp_rules = [
     "DOMAIN-SUFFIX,openai.com,🤖AI与流媒体(WARP)",
@@ -143,7 +135,6 @@ warp_rules = [
     "IP-CIDR,149.154.160.0/20,🤖AI与流媒体(WARP)"
 ]
 
-# 过滤并前置插入 WARP 规则
 existing_rules = [r for r in rules if not any(k in r for k in ["openai", "chatgpt", "anthropic", "netflix", "disneyplus", "telegram"])]
 data["rules"] = warp_rules + existing_rules
 
@@ -170,7 +161,7 @@ set_global_warp() {
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}[ERROR] 找不到 Mihomo 主配置文件 (${CONFIG_FILE})。${NC}"
         return 1
-    }
+    fi
 
     python3 - "$CONFIG_FILE" << 'PY_EOF'
 import sys, yaml
@@ -191,7 +182,6 @@ if not any(p.get("name") == "WARP-SOCKS5" for p in proxies):
 data["proxies"] = proxies
 
 rules = data.get("rules", [])
-# 将全局默认匹配规则改为走 WARP-SOCKS5
 new_rules = []
 for r in rules:
     if r.startswith("MATCH,") or r.startswith("FINAL,"):
@@ -218,14 +208,12 @@ check_warp_status() {
     echo -e "${GREEN}            Cloudflare WARP 状态与解锁检测               ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    # 1. 检查服务运行状态
     if systemctl is-active --quiet warp-svc; then
         echo -e "1. WARP 服务进程状态 : ${GREEN}[ 运行中 (Running) ]${NC}"
     else
         echo -e "1. WARP 服务进程状态 : ${RED}[ 未运行或未安装 ]${NC}"
     fi
 
-    # 2. 检查本地 SOCKS5 代理及 IP
     echo -e "2. 正在通过 WARP 代理测试出口 IP..."
     local trace_output
     trace_output=$(curl -s --max-time 5 --socks5 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
@@ -242,10 +230,8 @@ check_warp_status() {
         echo -e "   ${RED}[WARN] 无法通过本地 SOCKS5 (127.0.0.1:40000) 获取出口信息，请确认 WARP 是否已连接。${NC}"
     fi
 
-    # 3. 流媒体与 AI 解锁测试
     echo -e "\n3. 主流服务解锁支持检测:"
     
-    # OpenAI 测试
     local openai_test
     openai_test=$(curl -s --max-time 5 --socks5 127.0.0.1:40000 -o /dev/null -w "%{http_code}" https://chatgpt.com 2>/dev/null)
     if [[ "$openai_test" == "200" || "$openai_test" == "403" ]]; then
@@ -254,7 +240,6 @@ check_warp_status() {
         echo -e "   - ChatGPT / OpenAI  : ${YELLOW}[ 可能受限 ] (Code: ${openai_test:-Timeout})${NC}"
     fi
 
-    # Netflix 测试
     local nf_test
     nf_test=$(curl -s --max-time 5 --socks5 127.0.0.1:40000 -o /dev/null -w "%{http_code}" https://www.netflix.com/title/81280792 2>/dev/null)
     if [[ "$nf_test" == "200" || "$nf_test" == "404" ]]; then
@@ -263,7 +248,6 @@ check_warp_status() {
         echo -e "   - Netflix 解锁      : ${YELLOW}[ 仅自制剧或不支持 ]${NC}"
     fi
 
-    # YouTube / Google 解锁
     local yt_test
     yt_test=$(curl -s --max-time 5 --socks5 127.0.0.1:40000 https://www.youtube.com/generate_204 2>/dev/null)
     if [ $? -eq 0 ]; then
@@ -323,14 +307,3 @@ show_menu() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     show_menu
 fi
-```[cite: 9, 10]
-
----
-
-### 功能特性说明
-
-* **功能一（安装与重试 10 次）**：自动为您配置 Cloudflare 官方软件源并安装 `cloudflare-warp`，随后循环 10 次调用 Cloudflare 的 `cdn-cgi/trace` 接口，直到稳定捕获到 `warp=on` 与其分配的虚拟 IP 为止。
-* **功能二（智能分流）**：在您现有的 Mihomo 配置文件 (`/etc/yindun/mihomo/config.yaml`) 中自动追加一个本地 SOCKS5 (`127.0.0.1:40000`) 的 `WARP-SOCKS5` 节点，并将 OpenAI、ChatGPT、Anthropic、Netflix、Disney+、Telegram、Google 等高频受限域名和 IP 段自动前置路由至 WARP，其他国内/正常流量不受影响。
-* **功能三（全局走 WARP）**：一键将 Mihomo 的默认匹配规则 (`MATCH`) 修改为强制走 `WARP-SOCKS5`，实现全流量经过 WARP 加密出海。
-* **功能四（综合检测）**：直观展示 WARP 服务守护进程状态、当前代理出口 IP、虚拟地理位置，并实时测试 ChatGPT、Netflix、YouTube 等核心应用的解锁情况。
-* **选项 0**：退出脚本。
