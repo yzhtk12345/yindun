@@ -17,6 +17,10 @@ PID_FILE="${CONFIG_DIR}/sub_server.pid"
 PYTHON_SERVER_FILE="${CONFIG_DIR}/sub_server.py"
 SUBSCRIPTION_GENERATOR="${CONFIG_DIR}/generate_sub.py"
 TOKEN_FILE="${CONFIG_DIR}/sub_token.txt"
+ARGO_DOMAIN_FILE="${CONFIG_DIR}/argo_domain.txt"
+ARGO_PID_FILE="${CONFIG_DIR}/argo.pid"
+ARGO_LOG_FILE="${CONFIG_DIR}/argo.log"
+CLOUDFLARED_BIN="${CONFIG_DIR}/cloudflared"
 
 mkdir -p "$CONFIG_DIR"
 
@@ -98,6 +102,73 @@ stop_daemon() {
     fi
 }
 
+install_cloudflared() {
+    if [ ! -f "$CLOUDFLARED_BIN" ]; then
+        echo -e "${YELLOW}[INFO] 正在自动下载 cloudflared 客户端以支持 Argo 隧道...${NC}"
+        local arch
+        arch=$(uname -m)
+        local url=""
+        case "$arch" in
+            x86_64|amd64) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
+            aarch64|arm64) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
+            *) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
+        esac
+        curl -L -o "$CLOUDFLARED_BIN" "$url" 2>/dev/null
+        chmod +x "$CLOUDFLARED_BIN"
+    fi
+}
+
+manage_argo_tunnel() {
+    # 查找账本中的 argo-wstls 端口
+    local argo_port=""
+    if [ -f "$NODES_DB" ]; then
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "TYPE=argo-wstls|"; then
+                argo_port=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
+                break
+            fi
+        done < "$NODES_DB"
+    fi
+
+    if [ -z "$argo_port" ]; then
+        return 0
+    fi
+
+    install_cloudflared
+
+    # 检查现有 argo 进程是否存活
+    if [ -f "$ARGO_PID_FILE" ]; then
+        local argo_pid
+        argo_pid=$(cat "$ARGO_PID_FILE")
+        if kill -0 "$argo_pid" 2>/dev/null && [ -s "$ARGO_DOMAIN_FILE" ]; then
+            return 0 # 隧道正常运行且域名存在，无需重复拉起
+        fi
+    fi
+
+    echo -e "${CYAN}[INFO] 正在启动/修复 Argo 临时隧道获取最新优选域名...${NC}"
+    [ -f "$ARGO_PID_FILE" ] && kill -9 "$(cat "$ARGO_PID_FILE")" 2>/dev/null && rm -f "$ARGO_PID_FILE"
+
+    nohup "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${argo_port}" --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
+    echo $! > "$ARGO_PID_FILE"
+
+    # 循环等待并解析临时 argo 域名
+    local count=0
+    local argo_domain=""
+    while [ $count -lt 15 ]; do
+        sleep 2
+        if [ -f "$ARGO_LOG_FILE" ]; then
+            argo_domain=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$ARGO_LOG_FILE" | head -n 1 | sed 's|https://||')
+            if [ -n "$argo_domain" ]; then
+                echo "$argo_domain" > "$ARGO_DOMAIN_FILE"
+                echo -e "${GREEN}[SUCCESS] Argo 隧道临时域名获取成功: ${argo_domain}${NC}"
+                return 0
+            fi
+        }
+        count=$((count + 1))
+    done
+    echo -e "${YELLOW}[WARN] 获取 Argo 临时域名超时，将尝试沿用旧域名或稍后重试${NC}"
+}
+
 prepare_subscription_generator() {
     cat << 'EOF' > "$SUBSCRIPTION_GENERATOR"
 import os, urllib.parse, json
@@ -107,6 +178,12 @@ nodes_db = os.path.join(config_dir, "all_nodes.txt")
 all_links_path = os.path.join(config_dir, "all_links.txt")
 box_links_path = os.path.join(config_dir, "box_links.json")
 mi_links_path = os.path.join(config_dir, "mi_links.yaml")
+argo_domain_file = os.path.join(config_dir, "argo_domain.txt")
+
+argo_temp_domain = ""
+if os.path.exists(argo_domain_file):
+    with open(argo_domain_file, "r", encoding="utf-8") as f:
+        argo_temp_domain = f.read().strip()
 
 mi_proxies = []
 box_outbounds = []
@@ -383,6 +460,46 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
+            elif node_type == "argo-wstls":
+                base_name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
+                uuid = parts.get("UUID")
+                
+                # 定义 6 个优选节点映射: (后缀标签, 远程连接Host/SNI)
+                argo_variants = [
+                    ("argo-temp", argo_temp_domain if argo_temp_domain else "trycloudflare.com"),
+                    ("argo-cf090227", "cf.090227.xyz"),
+                    ("argo-cf182682", "cloudflare.182682.xyz"),
+                    ("argo-shopify", "www.shopify.com"),
+                    ("argo-v6-1", "2606:4700::0"),
+                    ("argo-v6-2", "2400:cb00:2049::0")
+                ]
+
+                for suffix, remote_host in argo_variants:
+                    n_name = f"{base_name}-{suffix}"
+                    mi_node_names.append(n_name)
+                    
+                    # 判断是否为 IPV6 格式
+                    is_ip6 = remote_host.startswith("[") or ":" in remote_host
+                    addr_val = remote_host.strip("[]") if is_ip6 else remote_host
+                    sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
+
+                    mi_proxies.append(f"""  - name: "{n_name}"
+    type: vless
+    server: {addr_val}
+    port: 443
+    uuid: {uuid}
+    network: ws
+    tls: true
+    udp: true
+    skip-cert-verify: true
+    servername: {sni_val}
+    ws-opts:
+      path: "/yindun-argo-wstls"
+      headers:
+        Host: {argo_temp_domain if argo_temp_domain else "trycloudflare.com"}""")
+
+                    all_links.append(f"vless://{uuid}@{addr_val}:443?encryption=none&security=tls&sni={sni_val}&type=ws&host={argo_temp_domain if argo_temp_domain else 'trycloudflare.com'}&path=%2Fyindun-argo-wstls#{urllib.parse.quote(n_name)}")
+
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
 mihomo_full_config = f"""port: 7890
@@ -555,6 +672,9 @@ start_daemon() {
         echo "$SUB_TOKEN" > "$TOKEN_FILE"
         echo -e "${GREEN}[INFO] 已生成并记录新的 Token${NC}"
     fi
+
+    # 3. 启动并修复 Argo 隧道（自动关联并生成6个优选节点，不影响其他节点）
+    manage_argo_tunnel
 
     cleanup_old_sub_firewall_rules
     prepare_subscription_generator
