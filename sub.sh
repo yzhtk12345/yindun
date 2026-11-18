@@ -141,10 +141,11 @@ manage_argo_tunnel() {
 
     echo -e "${CYAN}[INFO] 正在启动 Argo 临时隧道并等待获取有效域名 (绑定本地端口: ${argo_port})...${NC}"
     
-    nohup "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${argo_port}" --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
+    # 2. 已修改：使用 https 协议并通过 --no-tls-verify 信任本地 Mihomo 自签证书
+    nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
-    # 2. 严格等待循环：确保抓取到有效域名才继续，最多等待 30 秒（15次 * 2秒）
+    # 3. 严格等待循环：确保抓取到有效域名才继续，最多等待 30 秒（15次 * 2秒）
     local count=0
     local argo_domain=""
     while [ $count -lt 15 ]; do
