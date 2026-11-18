@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（基于你的 sub_3.sh 原版精修：完美支持 1~8 号协议 + Argo 10节点优选矩阵）
+# Description: 本地订阅分发守护进程（精简适配：完美支持 1~8 号协议 + Argo 443 隧道及最新 4 节点优选矩阵）
 # ==============================================================================
 
 RED="\033[31m"
@@ -116,12 +116,12 @@ all_links = []
 mi_node_names = []
 box_node_names = []
 
-# 定义 Cloudflare 优质官方/三网直连优选 IP (用于为 Argo 隧道衍生出 4 个高质量优选加速节点)
+# 定义你指定的 4 个优选加速目标 (用于为 Argo 443 隧道衍生出 4 个高质量优选加速节点)
 PREFERRED_CF_IPS = [
-    {"tag": "优选节点-电信直连", "addr": "104.16.132.228"},
-    {"tag": "优选节点-联通专线", "addr": "172.67.198.200"},
-    {"tag": "优选节点-移动加速", "addr": "104.18.32.10"},
-    {"tag": "优选节点-全球BGP", "addr": "162.159.135.42"}
+    {"tag": "优选-090227", "addr": "cf.090227.xyz"},
+    {"tag": "优选-182682", "addr": "cloudflare.182682.xyz"},
+    {"tag": "优选-Shopify", "addr": "www.shopify.com"},
+    {"tag": "优选-IPv6", "addr": "2606:4700::0"}
 ]
 
 if os.path.exists(nodes_db):
@@ -397,18 +397,18 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # I. Argo 10节点完美矩阵生成 (80端口 WS主节点+4个优选节点 + 443端口 WS-TLS主节点+4个优选节点 = 合计10个节点)
-            elif node_type in ["argo-ws", "argo-wstls"]:
+            # I. Argo 443 隧道矩阵生成 (保留 443 端口 WS-TLS 主节点 + 4 个自定义优选加速节点 = 合计 5 个节点)
+            elif node_type == "argo-wstls":
                 base_name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
                 domain = parts.get("DOMAIN")
                 uuid = parts.get("UUID")
-                path = parts.get("PATH", "/yindun-argo")
-                is_tls = (node_type == "argo-wstls")
-                port = 443 if is_tls else 80
+                path = parts.get("PATH", "/yindun-argo-wstls")
+                port = 443
+                is_tls = True
                 
                 if domain and uuid:
                     # 1. 默认主节点 (1个)
-                    main_name = f"{base_name}-({port}端口主节点)"
+                    main_name = f"{base_name}-(443端口主节点)"
                     mi_node_names.append(main_name)
                     box_node_names.append(main_name)
                     
@@ -418,7 +418,7 @@ if os.path.exists(nodes_db):
     port: {port}
     uuid: {uuid}
     network: ws
-    tls: {str(is_tls).lower()}
+    tls: true
     udp: true
     servername: {domain}
     ws-opts:
@@ -428,13 +428,13 @@ if os.path.exists(nodes_db):
                         "type": "vless", "tag": main_name, "server": domain, "server_port": port, "uuid": uuid, "network": "ws",
                         "tls": {"enabled": is_tls, "server_name": domain}, "transport": {"type": "ws", "path": path}
                     })
-                    all_links.append(f"vless://{uuid}@{domain}:{port}?encryption=none&security={'tls' if is_tls else 'none'}&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(main_name)}")
+                    all_links.append(f"vless://{uuid}@{domain}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(main_name)}")
 
-                    # 2. 衍生出 4 个优选节点 (4个)
+                    # 2. 衍生出 4 个自定义优选节点 (4个)
                     for pref in PREFERRED_CF_IPS:
                         pref_tag = pref["tag"]
                         pref_addr = pref["addr"]
-                        node_label = f"{base_name}-({port}端口-{pref_tag})"
+                        node_label = f"{base_name}-(443端口-{pref_tag})"
                         
                         mi_node_names.append(node_label)
                         box_node_names.append(node_label)
@@ -445,7 +445,7 @@ if os.path.exists(nodes_db):
     port: {port}
     uuid: {uuid}
     network: ws
-    tls: {str(is_tls).lower()}
+    tls: true
     udp: true
     servername: {domain}
     skip-cert-verify: true
@@ -459,7 +459,7 @@ if os.path.exists(nodes_db):
                             "tls": {"enabled": is_tls, "server_name": domain, "insecure": True},
                             "transport": {"type": "ws", "path": path, "headers": {"Host": domain}}
                         })
-                        all_links.append(f"vless://{uuid}@{pref_addr}:{port}?encryption=none&security={'tls' if is_tls else 'none'}&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(node_label)}")
+                        all_links.append(f"vless://{uuid}@{pref_addr}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(node_label)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
@@ -585,11 +585,10 @@ EOF
 }
 
 start_daemon() {
-    # 核心闭环：每次启动 sub.sh 时，自动先呼叫同目录下的 config.sh 刷新 Argo 临时隧道与域名
     local config_script="$(dirname "${BASH_SOURCE[0]}")/config.sh"
     [ ! -f "$config_script" ] && config_script="${CONFIG_DIR}/config.sh"
     if [ -f "$config_script" ]; then
-        echo -e "${CYAN}[INFO] 正在自动触发底层 config.sh 刷新 Argo 临时隧道与域名...${NC}"
+        echo -e "${CYAN}[INFO] 正在自动触发底层 config.sh 刷新 Argo 443 隧道与域名...${NC}"
         bash "$config_script" reload-argo
     fi
 
@@ -611,7 +610,7 @@ start_daemon() {
     echo $! > "$PID_FILE"
 
     echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动并生成 10 节点矩阵！${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动并生成节点矩阵！${NC}"
     echo -e "${GREEN}========================================================${NC}"
     echo -e "1. Base64 聚合订阅 (通用/Clash): ${CYAN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
     echo -e "2. 明文链接列表 (Raw Links)   : ${CYAN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
@@ -623,3 +622,4 @@ start_daemon() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
+```[cite: 7]
