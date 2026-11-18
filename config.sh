@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 完整支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS、XHTTP 及全新纯净 Argo 443 TLS 隧道的管理脚本
+# Description: 完整支持所有协议及纯净平铺 Argo 443 TLS 隧道的管理脚本
 # ==============================================================================
 
 RED="\033[31m"
@@ -73,10 +73,11 @@ get_available_port() {
 
     if [[ "$mode" == "manual" ]]; then
         if [[ -z "$manual_port" ]]; then
-            read -p "请输入您指定的端口 [20000-60000]: " target_port >&2
+            read -p "请输入您指定的端口 [20000-60000] (默认 38187): " target_port >&2
         else
             target_port="$manual_port"
         fi
+        [[ -z "$target_port" ]] && target_port="38187"
 
         if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
             echo -e "${RED}[ERROR] 端口输入无效！${NC}" >&2
@@ -125,9 +126,9 @@ cleanup_firewall_by_type() {
                 local old_p=$(echo "$line" | grep -oP 'PORT=\K[^|]+')
                 if [[ -n "$old_p" ]]; then
                     case "$fw_type" in
-                        ufw) ufw delete allow "${old_p}/tcp" >/dev/null 2>&1; ufw delete allow "${old_p}/udp" >/dev/null 2>&1 ;;
-                        firewalld) firewall-cmd --permanent --remove-port="${old_p}/tcp" >/dev/null 2>&1; firewall-cmd --permanent --remove-port="${old_p}/udp" >/dev/null 2>&1 ;;
-                        iptables) iptables -D INPUT -p tcp --dport "$old_p" -j ACCEPT 2>/dev/null || true; iptables -D INPUT -p udp --dport "$old_p" -j ACCEPT 2>/dev/null || true ;;
+                        ufw) ufw delete allow "${old_p}/tcp" >/dev/null 2>&1 ;;
+                        firewalld) firewall-cmd --permanent --remove-port="${old_p}/tcp" >/dev/null 2>&1 ;;
+                        iptables) iptables -D INPUT -p tcp --dport "$old_p" -j ACCEPT 2>/dev/null || true ;;
                     esac
                 fi
             fi
@@ -227,7 +228,6 @@ add_hysteria2_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "hysteria2"
-    local host_name=$(hostname)
     read -p "请输入 UDP 端口: " manual_port
     local port=$(get_available_port "manual" "$manual_port")
     [[ -z "$port" ]] && return 1
@@ -241,7 +241,7 @@ add_hysteria2_server_config() {
     local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "udp" "YinDun-Hy2-${port}"
-    local node_name="hysteria2-in-${host_name}"
+    local node_name="hysteria2-in-$(hostname)"
     local db_record="TYPE=hysteria2|NAME=${node_name}|PORT=${port}|PASSWORD=${hy2_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$hy2_password" "$cert_file" "$key_file" << 'PY_EOF'
@@ -275,7 +275,6 @@ add_tuic_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "tuic"
-    local host_name=$(hostname)
     read -p "请输入 UDP 端口: " manual_port
     local port=$(get_available_port "manual" "$manual_port")
     [[ -z "$port" ]] && return 1
@@ -290,7 +289,7 @@ add_tuic_server_config() {
     local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "udp" "YinDun-Tuic-${port}"
-    local node_name="tuic-in-${host_name}"
+    local node_name="tuic-in-$(hostname)"
     local db_record="TYPE=tuic|NAME=${node_name}|PORT=${port}|UUID=${tuic_uuid}|PASSWORD=${tuic_password}|FINGERPRINT=${sha256_fingerprint}|SNI=${sni_domain}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$tuic_uuid" "$tuic_password" "$cert_file" "$key_file" << 'PY_EOF'
@@ -326,12 +325,12 @@ add_mieru_server_config() {
     check_and_install_dependencies
     cleanup_firewall_by_type "mieru-tcp"
     cleanup_firewall_by_type "mieru-udp"
-    local host_name=$(hostname)
     read -p "TCP 端口: " manual_tcp && read -p "UDP 端口: " manual_udp
     local tcp_port=$(get_available_port "manual" "$manual_tcp")
     local udp_port=$(get_available_port "manual" "$manual_udp")
     [[ -z "$tcp_port" || -z "$udp_port" ]] && return 1
 
+    local host_name=$(hostname)
     local t_user="user_$(openssl rand -hex 3)" t_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
     local u_user="user_$(openssl rand -hex 3)" u_pass="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
     local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
@@ -371,7 +370,6 @@ add_snell_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "snell"
-    local host_name=$(hostname)
     read -p "请输入端口: " manual_port
     local port=$(get_available_port "manual" "$manual_port")
     [[ -z "$port" ]] && return 1
@@ -379,7 +377,7 @@ add_snell_server_config() {
     local snell_psk=$(openssl rand -hex 16 2>/dev/null | tr -d '\r\n')
     local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
     manage_firewall_port "add" "$port" "tcp" "YinDun-Snell-${port}"
-    local node_name="snell-in-${host_name}"
+    local node_name="snell-in-$(hostname)"
     local db_record="TYPE=snell|NAME=${node_name}|PORT=${port}|PSK=${snell_psk}|VERSION=6|MODE=default|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$snell_psk" "$db_record" << 'PY_EOF'
@@ -410,7 +408,6 @@ add_shadowquic_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "shadowquic"
-    local host_name=$(hostname)
     read -p "请输入 UDP 端口: " manual_port
     local port=$(get_available_port "manual" "$manual_port")
     [[ -z "$port" ]] && return 1
@@ -422,7 +419,7 @@ add_shadowquic_server_config() {
     local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
 
     manage_firewall_port "add" "$port" "udp" "YinDun-ShadowQUIC-${port}"
-    local node_name="shadowquic-in-${host_name}"
+    local node_name="shadowquic-in-$(hostname)"
     local db_record="TYPE=shadowquic|NAME=${node_name}|PORT=${port}|USER=${sq_user}|PASS=${sq_pass}|JLS=${jls_addr}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$sq_user" "$sq_pass" "$jls_addr" "$db_record" << 'PY_EOF'
@@ -615,7 +612,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
 }
 
-# 9. Argo 纯净 TLS 隧道核心逻辑（严格对齐你的字段平铺结构）
+# 9. Argo 纯净 443 TLS 隧道（严格单层平铺结构）
 launch_argo_tunnel() {
     local p_wstls="$1"
     local cf_bin="${CONFIG_DIR}/cloudflared"
@@ -641,15 +638,20 @@ launch_argo_tunnel() {
 }
 
 add_argo_ws_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
     check_and_install_cloudflared || return 1
 
     echo -e "\n${CYAN}========================================================${NC}"
     echo -e "${CYAN}  开始配置并写入 Argo 隧道 (argo-wstls-in-hk2t)        ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
-    local p_wstls="38187"
-    read -p "请输入本地端口 [默认 38187]: " input_p
-    [[ -n "$input_p" ]] && p_wstls="$input_p"
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入要指定的端口 [20000-60000] (默认 38187): " manual_port
+
+    local p_wstls=$(get_available_port "$port_mode" "$manual_port")
+    [[ -z "$p_wstls" ]] && return 1
 
     local uuid_wstls="08bee351-4b23-4a78-a23c-b78143286f5d"
     read -p "是否随机生成新的 UUID？[y/N]: " gen_uuid_choice
@@ -666,7 +668,6 @@ add_argo_ws_server_config() {
 
     local node_name="argo-wstls-in-hk2t"
 
-    # 使用纯净平铺文本直写，完美匹配你的结构
     python3 - "$CONFIG_FILE" "$node_name" "$p_wstls" "$uuid_wstls" "$argo_crt" "$argo_key" << 'PY_EOF'
 import sys, os, yaml
 
@@ -677,7 +678,7 @@ if os.path.exists(config_path):
     try:
         loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
-            listeners = [l for l in loaded["listeners"] if l.get("name") not in {name, "argo-ws-in-hk2t"}]
+            listeners = [l for l in loaded["listeners"] if l.get("name") not in {name, "argo-ws-in-hk2t", "argo-wstls-in-hk2t"}]
     except: pass
 
 new_listener = {
@@ -731,7 +732,7 @@ existing.append(r_wstls)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 PY_EOF
 
-    echo -e "${GREEN}[SUCCESS] Argo 纯净 443 隧道节点 (argo-wstls-in-hk2t) 配置成功！${NC}"
+    echo -e "${GREEN}[SUCCESS] Argo 纯净 443 TLS 隧道节点 (argo-wstls-in-hk2t) 配置成功！${NC}"
 }
 
 reload_argo_internal() {
@@ -772,8 +773,8 @@ show_menu() {
     echo "4. 添加 Mieru (TCP & UDP) 服务端节点"
     echo "5. 添加 Snell v6 服务端节点"
     echo "6. 添加 ShadowQUIC 服务端节点"
-    echo "7. 添加 AnyTLS 四大模式服务端节点"
-    echo "8. 添加 XHTTP 4大变体服务端节点"
+    echo "7. AnyTLS 四大模式服务端节点"
+    echo "8. XHTTP 4大变体服务端节点"
     echo "9. 添加/重置 Argo 纯净 443 TLS 隧道 (argo-wstls-in-hk2t)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
