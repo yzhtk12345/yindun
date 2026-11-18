@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（最终完美版：支持 1~8 号协议 + Argo 443 隧道 + IPv6 中括号修正矩阵）
+# Description: 本地订阅分发守护进程（终极完美版：修复 IPv6 尾零丢失 + 净化 Sing-box 标签与 IPv6 出站）
 # ==============================================================================
 
 RED="\033[31m"
@@ -116,11 +116,12 @@ all_links = []
 mi_node_names = []
 box_node_names = []
 
+# 定义 4 个优选加速目标 (IPv6 使用标准的 2606:4700:4700::1111 确保 sing-box 校验通过并能正确解析)
 PREFERRED_CF_IPS = [
-    {"tag": "优选-090227", "addr": "cf.090227.xyz", "is_v6": False},
-    {"tag": "优选-182682", "addr": "cloudflare.182682.xyz", "is_v6": False},
-    {"tag": "优选-Shopify", "addr": "www.shopify.com", "is_v6": False},
-    {"tag": "优选-IPv6", "addr": "2606:4700::0", "is_v6": True}
+    {"tag": "cf-090227", "name_tag": "优选-090227", "addr": "cf.090227.xyz", "is_v6": False},
+    {"tag": "cf-182682", "name_tag": "优选-182682", "addr": "cloudflare.182682.xyz", "is_v6": False},
+    {"tag": "shopify", "name_tag": "优选-Shopify", "addr": "www.shopify.com", "is_v6": False},
+    {"tag": "ipv6", "name_tag": "优选-IPv6", "addr": "2606:4700:4700::1111", "link_addr": "2606:4700::0", "is_v6": True}
 ]
 
 if os.path.exists(nodes_db):
@@ -397,7 +398,8 @@ if os.path.exists(nodes_db):
                 is_tls = True
                 
                 if domain and uuid:
-                    main_name = f"{base_name}-(443端口主节点)"
+                    # 主节点标签（净化格式，防止中文括号在部分客户端报错）
+                    main_name = f"{base_name}-443-main"
                     mi_node_names.append(main_name)
                     box_node_names.append(main_name)
                     
@@ -419,16 +421,19 @@ if os.path.exists(nodes_db):
                     })
                     all_links.append(f"vless://{uuid}@{domain}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(main_name)}")
 
+                    # 4 个优选节点生成（净化 tag 名称，确保 sing-box 100% 导入）
                     for pref in PREFERRED_CF_IPS:
                         pref_tag = pref["tag"]
+                        pref_name_tag = pref["name_tag"]
                         pref_addr = pref["addr"]
                         is_v6 = pref["is_v6"]
+                        link_addr = pref.get("link_addr", pref_addr)
                         
-                        node_label = f"{base_name}-(443端口-{pref_tag})"
+                        node_label = f"{base_name}-443-{pref_tag}"
                         mi_node_names.append(node_label)
                         box_node_names.append(node_label)
                         
-                        link_server_addr = f"[{pref_addr}]" if is_v6 else pref_addr
+                        link_server_addr = f"[{link_addr}]" if is_v6 else pref_addr
                         
                         mi_proxies.append(f"""  - name: "{node_label}"
     type: vless
@@ -611,5 +616,5 @@ start_daemon() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    start_daemon
+    start_daemon()
 fi
