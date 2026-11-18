@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Cloudflare WARP Manager (warp.sh)
-# Description: Cloudflare WARP 一键管理与智能分流、状态检测工具
+# Description: Cloudflare WARP 一键管理、智能分流、状态检测与重置工具
 # ==============================================================================
 
 RED="\033[31m"
@@ -201,7 +201,75 @@ PY_EOF
 }
 
 # ==============================================================================
-# 功能四：检测 WARP 运行状态、IP 获取情况及流媒体支持
+# 功能四：关闭 WARP 并恢复正常状态（清除代理、规则与服务）
+# ==============================================================================
+disable_and_restore_warp() {
+    echo -e "${CYAN}[INFO]正在关闭 Cloudflare WARP 并清理相关配置...${NC}"
+
+    # 1. 断开并停止 WARP 服务
+    if command -v warp-cli &>/dev/null; then
+        warp-cli --accept-tos disconnect >/dev/null 2>&1 || true
+        systemctl stop warp-svc >/dev/null 2>&1 || true
+        echo -e "${GREEN}[INFO] WARP 客户端服务已停止。${NC}"
+    else
+        echo -e "${YELLOW}[WARN] 未检测到 WARP 客户端，跳过服务关闭。${NC}"
+    fi
+
+    # 2. 清理 Mihomo 配置中的 WARP 污染（代理、分组及分流/全局规则）
+    if [ -f "$CONFIG_FILE" ]; then
+        echo -e "${CYAN}[INFO] 正在清理 Mihomo 配置文件中的 WARP 节点、分组与分流规则...${NC}"
+        python3 - "$CONFIG_FILE" << 'PY_EOF'
+import sys, yaml
+
+config_path = sys.argv[1]
+try:
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+except Exception as e:
+    print(f"读取配置文件失败: {e}")
+    sys.exit(1)
+
+# 移除 WARP-SOCKS5 代理
+proxies = data.get("proxies", [])
+data["proxies"] = [p for p in proxies if p.get("name") != "WARP-SOCKS5"]
+
+# 移除专属的 WARP 策略组
+proxy_groups = data.get("proxy-groups", [])
+data["proxy-groups"] = [g for g in proxy_groups if g.get("name") != "🤖AI与流媒体(WARP)"]
+
+# 清理与 WARP 相关的自定义分流规则，并将 MATCH/FINAL 恢复为原先的默认代理组
+rules = data.get("rules", [])
+cleaned_rules = []
+for r in rules:
+    # 过滤掉包含 WARP 组的目标分流规则
+    if "🤖AI与流媒体(WARP)" in r or "WARP-SOCKS5" in r:
+        continue
+    cleaned_rules.append(r)
+
+# 如果规则里没有了默认的 MATCH，则补回默认的节点选择组
+has_match = any(r.startswith("MATCH,") or r.startswith("FINAL,") for r in cleaned_rules)
+if not has_match:
+    cleaned_rules.append("MATCH,🌍选择代理节点")
+
+data["rules"] = cleaned_rules
+
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+print("SUCCESS")
+PY_EOF
+
+        systemctl restart mihomo 2>/dev/null || true
+        echo -e "${GREEN}[SUCCESS] Mihomo 配置文件已成功恢复正常状态并重启！${NC}"
+    else
+        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})，跳过规则清理。${NC}"
+    fi
+
+    echo -e "${GREEN}[SUCCESS] WARP 已完全关闭，系统已恢复正常代理状态！${NC}"
+}
+
+# ==============================================================================
+# 功能五：检测 WARP 运行状态、IP 获取情况及流媒体支持
 # ==============================================================================
 check_warp_status() {
     echo -e "\n${CYAN}========================================================${NC}"
@@ -272,10 +340,11 @@ show_menu() {
         echo "1. 安装 WARP 并连续获取 10 次 IP (直到成功)"
         echo "2. 设置智能分流 (AI、流媒体、Telegram、Google 走 WARP)"
         echo "3. 设置所有流量走 WARP (全局模式)"
-        echo "4. 综合状态检测 (运行状态、IP、解锁支持)"
+        echo "4. 关闭 WARP 并恢复正常状态 (清理服务与分流规则)"
+        echo "5. 综合状态检测 (运行状态、IP、解锁支持)"
         echo "0. 返回上级 / 退出"
         echo -e "${CYAN}========================================================${NC}"
-        read -p "请输入选项 [0-4]: " choice
+        read -p "请输入选项 [0-5]: " choice
 
         case "$choice" in
             1)
@@ -291,6 +360,10 @@ show_menu() {
                 read -p "按回车键返回主菜单..."
                 ;;
             4)
+                disable_and_restore_warp
+                read -p "按回车键返回主菜单..."
+                ;;
+            5)
                 check_warp_status
                 ;;
             0)
