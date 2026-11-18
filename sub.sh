@@ -135,17 +135,13 @@ manage_argo_tunnel() {
 
     install_cloudflared
 
-    if [ -f "$ARGO_PID_FILE" ]; then
-        local argo_pid
-        argo_pid=$(cat "$ARGO_PID_FILE")
-        if kill -0 "$argo_pid" 2>/dev/null && [ -s "$ARGO_DOMAIN_FILE" ]; then
-            return 0
-        fi
-    fi
+    # 1. 强力清理：杀死所有残存的、错误的或者多余的 cloudflared 进程，确保系统中绝对只有 1 个干净的隧道
+    pkill -9 -f "cloudflared tunnel" 2>/dev/null
+    rm -f "$ARGO_PID_FILE"
 
-    echo -e "${CYAN}[INFO] 正在启动/修复 Argo 临时隧道获取最新优选域名...${NC}"
-    [ -f "$ARGO_PID_FILE" ] && kill -9 "$(cat "$ARGO_PID_FILE")" 2>/dev/null && rm -f "$ARGO_PID_FILE"
-
+    echo -e "${CYAN}[INFO] 正在启动干净的 Argo 临时隧道 (绑定本地端口: ${argo_port})...${NC}"
+    
+    # 2. 以标准正确的 http 协议后台拉起隧道，并严格重定向日志
     nohup "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${argo_port}" --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
@@ -163,7 +159,7 @@ manage_argo_tunnel() {
         fi
         count=$((count + 1))
     done
-    echo -e "${YELLOW}[WARN] 获取 Argo 临时域名超时，将尝试沿用旧域名或稍后重试${NC}"
+    echo -e "${YELLOW}[WARN] 获取 Argo 临时域名超时，请检查网络或防火墙出站限制${NC}"
 }
 
 prepare_subscription_generator() {
