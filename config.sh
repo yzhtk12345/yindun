@@ -896,6 +896,8 @@ add_argo_ws_server_config() {
     check_and_install_python
     check_and_install_dependencies
     check_and_install_cloudflared || return 1
+    cleanup_firewall_by_type "argo-ws"
+    cleanup_firewall_by_type "argo-wstls"
     local host_name
     host_name=$(hostname)
 
