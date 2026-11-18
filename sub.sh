@@ -141,7 +141,7 @@ manage_argo_tunnel() {
 
     echo -e "${CYAN}[INFO] 正在启动 Argo 临时隧道并等待获取有效域名 (绑定本地端口: ${argo_port})...${NC}"
     
-    # 2. 已修改：使用 https 协议并通过 --no-tls-verify 信任本地 Mihomo 自签证书
+    # 2. 使用 https 协议并通过 --no-tls-verify 信任本地 Mihomo 自签证书
     nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
@@ -477,8 +477,10 @@ if os.path.exists(nodes_db):
                     is_ip6 = remote_host.startswith("[") or ":" in remote_host
                     addr_val = remote_host.strip("[]") if is_ip6 else remote_host
                     uri_addr = f"[{addr_val}]" if is_ip6 else remote_host
-                    # 修复：确保 IPv6 地址加上双引号，防止 YAML 解析崩溃
-                    mi_server_val = f'"{uri_addr}"' if is_ip6 else addr_val
+                    
+                    # 关键修改：
+                    # 1. 针对 Mihomo (mi_proxies): 仅用双引号包裹纯 IPv6 地址，去掉中括号 []，变成 server: "2606:4700::0"
+                    mi_server_val = f'"{addr_val}"' if is_ip6 else addr_val
 
                     sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
                     host_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
@@ -518,6 +520,7 @@ if os.path.exists(nodes_db):
                         }
                     })
 
+                    # 2. 针对普通链接 (all_links): 保持带中括号的 IPv6 地址，以便客户端能正确解析
                     all_links.append(f"vless://{uuid}@{uri_addr}:443?encryption=none&security=tls&sni={sni_val}&type=ws&host={host_val}&path=%2Fyindun-argo-wstls#{urllib.parse.quote(n_name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
