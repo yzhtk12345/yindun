@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（内置一键免操作全自动 Cron 开机驻守）
+# Description: 本地订阅分发守护进程（内置伴生静默自举与全自动开机托管）
 # ==============================================================================
 
 RED="\033[31m"
@@ -22,6 +22,7 @@ ARGO_PID_FILE="${CONFIG_DIR}/argo.pid"
 ARGO_LOG_FILE="${CONFIG_DIR}/argo.log"
 CLOUDFLARED_BIN="${CONFIG_DIR}/cloudflared"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+BOOT_RUN_SCRIPT="${CONFIG_DIR}/boot_run.sh"
 
 mkdir -p "$CONFIG_DIR"
 
@@ -126,7 +127,6 @@ manage_argo_tunnel() {
 
     echo -e "${CYAN}[INFO] 正在启动 Argo 临时隧道并等待获取有效域名 (绑定本地端口: ${argo_port})...${NC}"
     
-    # 强制使用 HTTP2 协议，保证开机连通率稳定
     nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate --protocol http2 > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
@@ -462,7 +462,7 @@ if os.path.exists(nodes_db):
                     addr_val = remote_host.strip("[]") if is_ip6 else remote_host
                     uri_addr = f"[{addr_val}]" if is_ip6 else remote_host
                     
-                    mi_server_val = f'"{addr_val}"' if is_ip6 else addr_val
+                    mi_server_val = f'"{addr_val}"' if is_ip6 else remote_host
 
                     sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
                     host_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
@@ -627,23 +627,106 @@ http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler).serve_forever()
 EOF
 }
 
-# 自动将开机自启任务写入 crontab（全自动，无需任何额外操作）
-check_and_setup_cron_autostart() {
-    local cron_cmd="@reboot sleep 15 && /bin/bash ${SCRIPT_PATH} >${CONFIG_DIR}/cron_boot.log 2>&1"
-    
-    # 检查当前 crontab 中是否已经存在该任务
-    if ! crontab -l 2>/dev/null | grep -q "${SCRIPT_PATH}"; then
-        echo -e "${CYAN}[INFO] 正在全自动为你写入 Cron 开机自启任务...${NC}"
+# ==============================================================================
+# 核心亮点：动态生成独立的“伴生静默启动脚本”并写入 Cron
+# ==============================================================================
+prepare_boot_run_script() {
+    # 动态生成一个专门供开机静默调用的精简版脚本（绝对无 read 交互，自动复用历史状态）
+    cat << EOF > "$BOOT_RUN_SCRIPT"
+#!/usr/bin/env bash
+sleep 15
+CONFIG_DIR="/etc/yindun/mihomo"
+NODES_DB="\${CONFIG_DIR}/all_nodes.txt"
+PORT_RECORD_FILE="\${CONFIG_DIR}/sub_web_port.txt"
+PID_FILE="\${CONFIG_DIR}/sub_server.pid"
+PYTHON_SERVER_FILE="\${CONFIG_DIR}/sub_server.py"
+SUBSCRIPTION_GENERATOR="\${CONFIG_DIR}/generate_sub.py"
+TOKEN_FILE="\${CONFIG_DIR}/sub_token.txt"
+ARGO_DOMAIN_FILE="\${CONFIG_DIR}/argo_domain.txt"
+ARGO_PID_FILE="\${CONFIG_DIR}/argo.pid"
+ARGO_LOG_FILE="\${CONFIG_DIR}/argo.log"
+CLOUDFLARED_BIN="\${CONFIG_DIR}/cloudflared"
+
+[ ! -f "\$NODES_DB" ] && exit 1
+
+# 停止旧进程
+if [ -f "\$PID_FILE" ]; then
+    pid=\$(cat "\$PID_FILE")
+    kill -0 "\$pid" 2>/dev/null && kill "\$pid" 2>/dev/null
+    rm -f "\$PID_FILE"
+fi
+
+# 获取历史或随机端口
+web_port=""
+[ -f "\$PORT_RECORD_FILE" ] && web_port=\$(cat "\$PORT_RECORD_FILE")
+if [ -z "\$web_port" ]; then
+    while true; do
+        web_port=\$((RANDOM % 10001 + 10000))
+        ss -tuln | grep -q ":\${web_port} " || break
+    done
+    echo "\$web_port" > "\$PORT_RECORD_FILE"
+fi
+
+# 获取历史或随机 Token
+SUB_TOKEN=""
+[ -f "\$TOKEN_FILE" ] && SUB_TOKEN=\$(cat "\$TOKEN_FILE")
+if [ -z "\$SUB_TOKEN" ]; then
+    SUB_TOKEN=\$(openssl rand -hex 32)
+    echo "\$SUB_TOKEN" > "\$TOKEN_FILE"
+fi
+
+# 启动 Argo 隧道
+argo_port=""
+while IFS= read -r line; do
+    if echo "\$line" | grep -q "TYPE=argo-wstls|"; then
+        argo_port=\$(echo "\$line" | grep -oP 'PORT=\K[^|]+')
+        break
+    fi
+done < "\$NODES_DB"
+
+if [ -n "\$argo_port" ]; then
+    pkill -9 -f "cloudflared tunnel" 2>/dev/null
+    rm -f "\$ARGO_PID_FILE" "\$ARGO_DOMAIN_FILE" "\$ARGO_LOG_FILE"
+    nohup "\$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:\${argo_port}" --no-tls-verify --no-autoupdate --protocol http2 > "\$ARGO_LOG_FILE" 2>&1 &
+    echo \$! > "\$ARGO_PID_FILE"
+
+    count=0
+    argo_domain=""
+    while [ \$count -lt 15 ]; do
+        sleep 2
+        if [ -f "\$ARGO_LOG_FILE" ]; then
+            argo_domain=\$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "\$ARGO_LOG_FILE" | head -n 1 | sed 's|https://||')
+            if [ -n "\$argo_domain" ]; then
+                echo "\$argo_domain" > "\$ARGO_DOMAIN_FILE"
+                break
+            fi
+        fi
+        count=\$((count + 1))
+    done
+fi
+
+# 重新生成订阅文件
+cd "\$CONFIG_DIR" || exit
+python3 "\$SUBSCRIPTION_GENERATOR"
+
+# 启动 Python 订阅后端
+nohup python3 "\$PYTHON_SERVER_FILE" "\$web_port" "\$SUB_TOKEN" "\$CONFIG_DIR" >/dev/null 2>&1 &
+echo \$! > "\$PID_FILE"
+EOF
+    chmod +x "$BOOT_RUN_SCRIPT"
+
+    # 自动写入 Cron 任务去调度这个干净的伴生脚本
+    local cron_cmd="@reboot /bin/bash ${BOOT_RUN_SCRIPT} >${CONFIG_DIR}/cron_boot.log 2>&1"
+    if ! crontab -l 2>/dev/null | grep -q "${BOOT_RUN_SCRIPT}"; then
         (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
-        echo -e "${GREEN}[SUCCESS]  Cron 开机自启任务已成功写入！${NC}"
     fi
 }
 
 start_daemon() {
-    [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
+    [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！请先通过 config.sh 配置节点。${NC}" && return 1
     stop_daemon
 
-    # 彻底清理掉之前可能残留的 systemd 服务（避免干扰）
+    # 彻底清理掉之前可能残留的 systemd 服务
     if systemctl is-active --quiet yindun-sub 2>/dev/null || [ -f /etc/systemd/system/yindun-sub.service ]; then
         systemctl stop yindun-sub >/dev/null 2>&1
         systemctl disable yindun-sub >/dev/null 2>&1
@@ -651,27 +734,14 @@ start_daemon() {
         systemctl daemon-reload >/dev/null 2>&1
     fi
 
-    # 1. 自动注入 Cron 开机自启
-    check_and_setup_cron_autostart
+    # 1. 自动生成伴生静默脚本并注册开机任务
+    prepare_boot_run_script
 
     local web_port=""
     if [ -f "$PORT_RECORD_FILE" ]; then
         local old_port
         old_port=$(cat "$PORT_RECORD_FILE")
-        if [[ -n "$old_port" ]]; then
-            echo -e "${YELLOW}[INFO] 检测到已存在历史订阅端口: ${CYAN}${old_port}${NC}"
-            if [ -t 0 ]; then
-                read -p "是否使用现有端口？[Y/n] (默认回车使用现有): " choice_port
-                [[ -z "$choice_port" ]] && choice_port="y"
-            else
-                choice_port="y"
-                echo -e "${CYAN}[INFO] 非交互环境（后台启动），自动选择使用现有端口${NC}"
-            fi
-
-            if [[ "$choice_port" == "y" || "$choice_port" == "Y" ]]; then
-                web_port="$old_port"
-            fi
-        fi
+        [[ -n "$old_port" ]] && web_port="$old_port"
     fi
 
     if [ -z "$web_port" ]; then
@@ -688,20 +758,7 @@ start_daemon() {
     if [ -f "$TOKEN_FILE" ]; then
         local old_token
         old_token=$(cat "$TOKEN_FILE")
-        if [[ -n "$old_token" ]]; then
-            echo -e "${YELLOW}[INFO] 检测到已存在历史 Token: ${CYAN}${old_token}${NC}"
-            if [ -t 0 ]; then
-                read -p "是否使用现有 Token？[Y/n] (默认回车使用现有): " choice_token
-                [[ -z "$choice_token" ]] && choice_token="y"
-            else
-                choice_token="y"
-                echo -e "${CYAN}[INFO] 非交互环境（后台启动），自动选择使用现有 Token${NC}"
-            fi
-
-            if [[ "$choice_token" == "y" || "$choice_token" == "Y" ]]; then
-                SUB_TOKEN="$old_token"
-            fi
-        fi
+        [[ -n "$old_token" ]] && SUB_TOKEN="$old_token"
     fi
 
     if [ -z "$SUB_TOKEN" ]; then
@@ -710,7 +767,7 @@ start_daemon() {
         echo -e "${GREEN}[INFO] 已生成并记录新的 Token${NC}"
     fi
 
-    # 严格保障：先百分之百获取并写入最新域名，再执行订阅生成
+    # 启动 Argo 隧道
     manage_argo_tunnel || { echo -e "${RED}[ERROR] Argo 隧道初始化失败，终止订阅启动${NC}"; return 1; }
 
     cleanup_old_sub_firewall_rules
@@ -734,6 +791,6 @@ start_daemon() {
     echo -e "${GREEN}========================================================${NC}"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]]" == "${0}" ]]; then
     start_daemon
 fi
