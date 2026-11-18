@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS 及 4 大 XHTTP 变体原生入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS、XHTTP 及 Argo 临时隧道双栈节点管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -20,9 +20,9 @@ check_and_install_dependencies() {
     if ! command -v ss &>/dev/null || ! command -v openssl &>/dev/null; then
         echo -e "${YELLOW}[INFO] 检测到系统缺少基础网络或加密工具，正在自动安装...${NC}"
         if command -v apt-get &>/dev/null; then
-            apt-get update -y && apt-get install -y iproute2 openssl &>/dev/null
+            apt-get update -y && apt-get install -y iproute2 openssl curl &>/dev/null
         elif command -v yum &>/dev/null; then
-            yum install -y iproute openssl &>/dev/null
+            yum install -y iproute openssl curl &>/dev/null
         fi
     fi
 }
@@ -35,6 +35,37 @@ check_and_install_python() {
         elif command -v yum &>/dev/null; then
             yum install -y python3 python3-PyYAML &>/dev/null || yum install -y python3 python3-yaml &>/dev/null || true
         fi
+    fi
+}
+
+check_and_install_cloudflared() {
+    local cf_bin="${CONFIG_DIR}/cloudflared"
+    if [ -x "$cf_bin" ]; then
+        return 0
+    fi
+    if command -v cloudflared &>/dev/null; then
+        ln -sf "$(command -v cloudflared)" "$cf_bin"
+        return 0
+    fi
+
+    echo -e "${YELLOW}[INFO] 正在自动下载并安装 Cloudflared 官方二进制文件...${NC}"
+    local arch
+    arch=$(uname -m)
+    local cf_arch="amd64"
+    case "$arch" in
+        x86_64|amd64) cf_arch="amd64" ;;
+        aarch64|arm64) cf_arch="arm64" ;;
+        armv7l) cf_arch="arm" ;;
+    esac
+
+    local url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"
+    if curl -L -s --max-time 60 "$url" -o "$cf_bin"; then
+        chmod +x "$cf_bin"
+        echo -e "${GREEN}[SUCCESS] Cloudflared 安装成功！${NC}"
+        return 0
+    else
+        echo -e "${RED}[ERROR] Cloudflared 下载失败，请检查服务器网络或手动放置到 ${cf_bin}${NC}"
+        return 1
     fi
 }
 
@@ -100,7 +131,6 @@ cleanup_firewall_by_type() {
     local target_type="$1"
     local fw_type
     fw_type=$(detect_firewall)
-    echo -e "${CYAN}[INFO] 正在清理防火墙中的旧 ${target_type} 端口规则...${NC}"
 
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
@@ -154,7 +184,6 @@ manage_firewall_port() {
             for p in "${protos[@]}"; do
                 if [[ "$action" == "add" ]]; then
                     ufw allow "$port/$p" comment "$comment" >/dev/null 2>&1
-                    echo -e "${GREEN}[UFW] 已开放端口 ${port}/${p} (备注: ${comment})${NC}"
                 fi
             done
             ufw reload >/dev/null 2>&1
@@ -163,7 +192,6 @@ manage_firewall_port() {
             for p in "${protos[@]}"; do
                 if [[ "$action" == "add" ]]; then
                     firewall-cmd --permanent --add-port="${port}/${p}" >/dev/null 2>&1
-                    echo -e "${GREEN}[Firewalld] 已永久开放端口 ${port}/${p}${NC}"
                 fi
             done
             firewall-cmd --reload >/dev/null 2>&1
@@ -172,12 +200,8 @@ manage_firewall_port() {
             for p in "${protos[@]}"; do
                 if [[ "$action" == "add" ]]; then
                     iptables -A INPUT -p "$p" --dport "$port" -j ACCEPT 2>/dev/null
-                    echo -e "${GREEN}[Iptables] 已开放端口 ${port}/${p}${NC}"
                 fi
             done
-            ;;
-        *)
-            echo -e "${YELLOW}[WARN] 未检测到主流防火墙，跳过配置。${NC}"
             ;;
     esac
 }
@@ -205,23 +229,18 @@ select_best_domain_from_list() {
         if [[ -n "$time_cost" ]] && awk "BEGIN {exit !($time_cost > 0)}"; then
             local ms
             ms=$(awk "BEGIN {print int($time_cost * 1000)}")
-            echo -e "  -> 候选: ${domain} | 延迟: ${ms} ms" >&2
             echo "$ms $domain" >> "$temp_file"
         fi
     done
 
     if [ -s "$temp_file" ]; then
         best_domain=$(sort -n "$temp_file" | head -n 1 | awk '{print $2}')
-        echo -e "${GREEN}[SUCCESS] 已优选低延迟域名: ${best_domain}${NC}" >&2
-    else
-        echo -e "${YELLOW}[WARN] 测速超时，使用默认可用域名: ${best_domain}${NC}" >&2
     fi
     rm -f "$temp_file"
     echo -n "$best_domain"
 }
 
 select_best_reality_domain() {
-    echo -e "${CYAN}[INFO] 正在对候选伪装域名进行测速优选...${NC}" >&2
     select_best_domain_from_list "gateway.icloud.com" "${REALITY_CANDIDATES[@]}"
 }
 
@@ -231,10 +250,6 @@ add_vless_reality_server_config() {
     cleanup_firewall_by_type "vless-reality"
     local host_name
     host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 VLESS-REALITY 服务端入站          ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto" manual_port=""
@@ -303,10 +318,6 @@ add_hysteria2_server_config() {
     local host_name
     host_name=$(hostname)
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Hysteria 2 服务端入站             ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto" manual_port=""
     [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
@@ -367,10 +378,6 @@ add_tuic_server_config() {
     cleanup_firewall_by_type "tuic"
     local host_name
     host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 TUIC v5 服务端入站             ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto" manual_port=""
@@ -436,10 +443,6 @@ add_mieru_server_config() {
     local host_name
     host_name=$(hostname)
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Mieru (TCP & UDP) 服务端入站     ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto" manual_tcp="" manual_udp=""
     [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "TCP 端口: " manual_tcp && read -p "UDP 端口: " manual_udp
@@ -496,10 +499,6 @@ add_snell_server_config() {
     cleanup_firewall_by_type "snell"
     local host_name
     host_name=$(hostname)
-
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 Snell v6 (原生入站) 服务端        ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
 
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto" manual_port=""
@@ -565,10 +564,6 @@ add_shadowquic_server_config() {
     local host_name
     host_name=$(hostname)
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始配置并写入 ShadowQUIC 服务端入站             ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
     read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
     local port_mode="auto" manual_port=""
     [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
@@ -632,10 +627,6 @@ add_anytls_all_modes_server_config() {
     local host_name
     host_name=$(hostname)
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}  开始配置并写入 AnyTLS 四大模式服务端入站 (智能优选伪装)  ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
     local cert_dir="${CONFIG_DIR}/cert"
     mkdir -p "$cert_dir"
     local cert_file="${cert_dir}/anytls.crt"
@@ -644,17 +635,12 @@ add_anytls_all_modes_server_config() {
         openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=download.nvidia.com" 2>/dev/null
     fi
 
-    echo -e "${CYAN}[INFO] 正在为 Shadow-TLS 优选驱动/硬件CDN域名...${NC}"
     local stls_domain
-    stls_domain=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com" "downloads.dell.com")
-
-    echo -e "${CYAN}[INFO] 正在为 ResTLS 优选游戏/内容分发CDN域名...${NC}"
+    stls_domain=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com")
     local rtls_domain
-    rtls_domain=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com" "static.wikia.nocookie.net")
-
-    echo -e "${CYAN}[INFO] 正在为 JLS 优选开发/开源更新CDN域名...${NC}"
+    rtls_domain=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com")
     local jls_domain
-    jls_domain=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "packages.mozilla.org" "registry.npmjs.org")
+    jls_domain=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "registry.npmjs.org")
 
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
@@ -692,9 +678,7 @@ add_anytls_all_modes_server_config() {
         "$name_jls" "$p_jls" "$u_jls" "$pass_jls" "$jls_domain" "$rec_jls" << 'PY_EOF'
 import sys, os, yaml
 args = sys.argv[1:]
-config_path = args[0]
-nodes_db = args[1]
-
+config_path, nodes_db = args[0], args[1]
 n_std, p_std, u_std, pw_std, crt, key, rec_std = args[2:9]
 n_stls, p_stls, u_stls, pw_stls, d_stls, rec_stls = args[9:15]
 n_rtls, p_rtls, u_rtls, pw_rtls, d_rtls, rec_rtls = args[15:21]
@@ -735,7 +719,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置完成！${NC}"
 }
 
-# 8. XHTTP 系列节点 (4 大稳定变体：Reality / Shadow-TLS / ResTLS / JLS)
+# 8. XHTTP 系列节点
 add_xhttp_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -746,33 +730,18 @@ add_xhttp_all_modes_server_config() {
     local host_name
     host_name=$(hostname)
 
-    echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}  开始配置并写入 XHTTP 4大变体服务端入站 (多域名不重复)   ${NC}"
-    echo -e "${CYAN}========================================================${NC}"
-
     local mihomo_bin="${CONFIG_DIR}/mihomo"
     [ ! -x "$mihomo_bin" ] && echo -e "${RED}[ERROR] 未找到 Mihomo 可执行文件！${NC}" && return 1
 
-    echo -e "${CYAN}[INFO] 正在为 XHTTP-Reality 优选伪装域名...${NC}"
-    local x_dom_reality
+    local x_dom_reality x_dom_stls x_dom_rtls x_dom_jls
     x_dom_reality=$(select_best_domain_from_list "gateway.icloud.com" "gateway.icloud.com" "dl.google.com")
-
-    echo -e "${CYAN}[INFO] 正在为 XHTTP-ShadowTLS 优选独立硬件驱动CDN域名...${NC}"
-    local x_dom_stls
     x_dom_stls=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com")
-
-    echo -e "${CYAN}[INFO] 正在为 XHTTP-ResTLS 优选静态资源CDN域名...${NC}"
-    local x_dom_rtls
     x_dom_rtls=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com")
-
-    echo -e "${CYAN}[INFO] 正在为 XHTTP-JLS 优选开源组件CDN域名...${NC}"
-    local x_dom_jls
     x_dom_jls=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "registry.npmjs.org")
 
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "45.207.156.146")
 
-    echo -e "${CYAN}[INFO] 正在为 4 种 XHTTP 变体自动分配端口...${NC}"
     local p_xr p_xst p_xrt p_xj
     p_xr=$(get_available_port "auto" "")
     p_xst=$(get_available_port "auto" "")
@@ -819,7 +788,6 @@ add_xhttp_all_modes_server_config() {
 import sys, os, yaml
 args = sys.argv[1:]
 config_path, nodes_db = args[0], args[1]
-
 n_xr, p_xr, u_xr, d_xr, priv, pub, sid, rec_xr = args[2:10]
 n_xst, p_xst, u_xst, pw_stls, d_stls, rec_xst = args[10:16]
 n_xrt, p_xrt, u_xrt, pw_rtls, d_rtls, rec_xrt = args[16:22]
@@ -848,33 +816,139 @@ if os.path.exists(config_path):
             listeners = [l for l in loaded["listeners"] if l.get("name") not in xhttp_names]
     except: pass
 
-listeners.append({
-    "name": n_xr, "type": "vless", "port": int(p_xr), "listen": "0.0.0.0",
-    "users": [{"username": "1", "uuid": u_xr, "flow": ""}],
-    "xhttp-config": {"path": "/yindun-xr", "host": d_xr, "mode": "stream-up", "uplink-http-method": "POST"},
-    "reality-config": {"dest": f"{d_xr}:443", "private-key": priv, "short-id": [sid], "server-names": [d_xr]}
-})
+listeners.append({"name": n_xr, "type": "vless", "port": int(p_xr), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xr, "flow": ""}], "xhttp-config": {"path": "/yindun-xr", "host": d_xr, "mode": "stream-up", "uplink-http-method": "POST"}, "reality-config": {"dest": f"{d_xr}:443", "private-key": priv, "short-id": [sid], "server-names": [d_xr]}})
+listeners.append({"name": n_xst, "type": "vless", "port": int(p_xst), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xst, "flow": ""}], "xhttp-config": {"path": "/yindun-xst", "host": d_stls, "mode": "stream-up", "uplink-http-method": "POST"}, "shadow-tls": {"enable": True, "version": 3, "users": [{"name": "1", "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}})
+listeners.append({"name": n_xrt, "type": "vless", "port": int(p_xrt), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xrt, "flow": ""}], "xhttp-config": {"path": "/yindun-xrt", "host": d_rtls, "mode": "stream-up", "uplink-http-method": "POST"}, "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}})
+listeners.append({"name": n_xj, "type": "vless", "port": int(p_xj), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xj, "flow": ""}], "xhttp-config": {"path": "/yindun-xj", "host": d_jls, "mode": "stream-up", "uplink-http-method": "POST"}, "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}})
 
-listeners.append({
-    "name": n_xst, "type": "vless", "port": int(p_xst), "listen": "0.0.0.0",
-    "users": [{"username": "1", "uuid": u_xst, "flow": ""}],
-    "xhttp-config": {"path": "/yindun-xst", "host": d_stls, "mode": "stream-up", "uplink-http-method": "POST"},
-    "shadow-tls": {"enable": True, "version": 3, "users": [{"name": "1", "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}
-})
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+    systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
+}
 
-listeners.append({
-    "name": n_xrt, "type": "vless", "port": int(p_xrt), "listen": "0.0.0.0",
-    "users": [{"username": "1", "uuid": u_xrt, "flow": ""}],
-    "xhttp-config": {"path": "/yindun-xrt", "host": d_rtls, "mode": "stream-up", "uplink-http-method": "POST"},
-    "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}
-})
+# 辅助函数：触发 sub.sh 更新订阅
+trigger_sub_update() {
+    local sub_script="$(dirname "${BASH_SOURCE[0]}")/sub.sh"
+    [ ! -f "$sub_script" ] && sub_script="/root/sub.sh"
+    [ ! -f "$sub_script" ] && sub_script="${CONFIG_DIR}/sub.sh"
 
-listeners.append({
-    "name": n_xj, "type": "vless", "port": int(p_xj), "listen": "0.0.0.0",
-    "users": [{"username": "1", "uuid": u_xj, "flow": ""}],
-    "xhttp-config": {"path": "/yindun-xj", "host": d_jls, "mode": "stream-up", "uplink-http-method": "POST"},
-    "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}
-})
+    if [ -f "$sub_script" ]; then
+        echo -e "${CYAN}[INFO] 正在自动调用 sub.sh 刷新客户端订阅...${NC}"
+        bash "$sub_script" start
+    else
+        echo -e "${YELLOW}[WARN] 未找到 sub.sh，请手动运行订阅服务。${NC}"
+    fi
+}
+
+# 内部启动 Argo 隧道
+launch_argo_tunnels() {
+    local p_ws="$1"
+    local p_wstls="$2"
+    local cf_bin="${CONFIG_DIR}/cloudflared"
+    local log_ws="${CONFIG_DIR}/argo_ws.log"
+    local log_wstls="${CONFIG_DIR}/argo_wstls.log"
+    local pid_ws="${CONFIG_DIR}/argo_ws.pid"
+    local pid_wstls="${CONFIG_DIR}/argo_wstls.pid"
+
+    for pf in "$pid_ws" "$pid_wstls"; do
+        if [ -f "$pf" ]; then
+            local old_pid
+            old_pid=$(cat "$pf")
+            kill -9 "$old_pid" 2>/dev/null || true
+            rm -f "$pf"
+        fi
+    done
+
+    > "$log_ws"
+    > "$log_wstls"
+
+    nohup "$cf_bin" tunnel --url "http://127.0.0.1:${p_ws}" --no-autoupdate > "$log_ws" 2>&1 &
+    echo $! > "$pid_ws"
+
+    nohup "$cf_bin" tunnel --url "https://127.0.0.1:${p_wstls}" --no-tls-verify --no-autoupdate > "$log_wstls" 2>&1 &
+    echo $! > "$pid_wstls"
+
+    local dom_ws="" dom_wstls=""
+    for _ in $(seq 1 20); do
+        sleep 1
+        [ -z "$dom_ws" ] && dom_ws=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$log_ws" 2>/dev/null | head -n 1 | sed 's|https://||')
+        [ -z "$dom_wstls" ] && dom_wstls=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$log_wstls" 2>/dev/null | head -n 1 | sed 's|https://||')
+        if [[ -n "$dom_ws" && -n "$dom_wstls" ]]; then
+            break
+        fi
+    done
+
+    if [[ -z "$dom_ws" || -z "$dom_wstls" ]]; then
+        echo -e "${RED}[ERROR] 获取 Argo 临时域名超时！${NC}"
+        return 1
+    fi
+
+    ARGO_DOMAIN_WS="$dom_ws"
+    ARGO_DOMAIN_WSTLS="$dom_wstls"
+    return 0
+}
+
+# 9. 添加 Argo 临时隧道双节点（全自动：建站 + 拉隧道 + 自动刷新订阅）
+add_argo_ws_server_config() {
+    check_and_install_python
+    check_and_install_dependencies
+    check_and_install_cloudflared || return 1
+    local host_name
+    host_name=$(hostname)
+
+    echo -e "\n${CYAN}========================================================${NC}"
+    echo -e "${CYAN}  开始配置并写入 Argo 临时隧道双节点 (WS + WS-TLS)      ${NC}"
+    echo -e "${CYAN}========================================================${NC}"
+
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_ws="" manual_wstls=""
+    if [[ "$port_mode_choice" == "2" ]]; then
+        port_mode="manual"
+        read -p "请输入 VLESS-WS 本地端口 [20000-60000]: " manual_ws
+        read -p "请输入 VLESS-WS-TLS 本地端口 [20000-60000]: " manual_wstls
+    fi
+
+    local p_ws p_wstls
+    p_ws=$(get_available_port "$port_mode" "$manual_ws")
+    [[ -z "$p_ws" ]] && return 1
+    p_wstls=$(get_available_port "$port_mode" "$manual_wstls")
+    [[ -z "$p_wstls" ]] && return 1
+
+    if [[ "$p_ws" == "$p_wstls" ]]; then
+        echo -e "${RED}[ERROR] VLESS-WS 与 VLESS-WS-TLS 不能使用相同的端口 (${p_ws})！${NC}"
+        return 1
+    fi
+
+    local uuid_ws uuid_wstls
+    uuid_ws=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    uuid_wstls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+
+    local cert_dir="${CONFIG_DIR}/cert"
+    mkdir -p "$cert_dir"
+    local argo_crt="${cert_dir}/argo_wstls.crt"
+    local argo_key="${cert_dir}/argo_wstls.key"
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$argo_key" -out "$argo_crt" -days 3650 -subj "/CN=argo.trycloudflare.com" 2>/dev/null
+
+    local name_ws="argo-ws-in-${host_name}"
+    local name_wstls="argo-wstls-in-${host_name}"
+
+    python3 - "$CONFIG_FILE" "$name_ws" "$p_ws" "$uuid_ws" "$name_wstls" "$p_wstls" "$uuid_wstls" "$argo_crt" "$argo_key" << 'PY_EOF'
+import sys, os, yaml
+config_path, n_ws, p_ws, u_ws, n_wstls, p_wstls, u_wstls, crt, key = sys.argv[1:10]
+
+listeners = []
+if os.path.exists(config_path):
+    try:
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") not in {n_ws, n_wstls}]
+    except: pass
+
+listeners.append({"name": n_ws, "type": "vless", "port": int(p_ws), "listen": "127.0.0.1", "users": [{"username": "1", "uuid": u_ws, "flow": ""}], "network": "ws", "ws-config": {"path": "/yindun-argo-ws"}})
+listeners.append({"name": n_wstls, "type": "vless", "port": int(p_wstls), "listen": "127.0.0.1", "users": [{"username": "1", "uuid": u_wstls, "flow": ""}], "network": "ws", "ws-config": {"path": "/yindun-argo-wstls"}, "certificate": crt, "private-key": key})
 
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -882,7 +956,74 @@ with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n
 PY_EOF
 
     systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
+    sleep 1
+
+    launch_argo_tunnels "$p_ws" "$p_wstls" || return 1
+
+    local r_ws="TYPE=argo-ws|NAME=${name_ws}|PORT=${p_ws}|UUID=${uuid_ws}|DOMAIN=${ARGO_DOMAIN_WS}|PATH=/yindun-argo-ws"
+    local r_wstls="TYPE=argo-wstls|NAME=${name_wstls}|PORT=${p_wstls}|UUID=${uuid_wstls}|DOMAIN=${ARGO_DOMAIN_WSTLS}|PATH=/yindun-argo-wstls"
+
+    python3 - "$NODES_DB" "$r_ws" "$r_wstls" << 'PY_EOF'
+import sys, os
+nodes_db, r_ws, r_wstls = sys.argv[1:4]
+existing = []
+if os.path.exists(nodes_db):
+    with open(nodes_db, encoding="utf-8") as f:
+        for line in f:
+            l = line.strip()
+            if not l: continue
+            if l.startswith("TYPE=argo-ws|") or l.startswith("TYPE=argo-wstls|"):
+                continue
+            existing.append(l)
+existing.extend([r_ws, r_wstls])
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+PY_EOF
+
+    echo -e "${GREEN}[SUCCESS] Argo 临时隧道双节点配置成功！${NC}"
+    trigger_sub_update
+}
+
+# 内部静默刷新 Argo 隧道（供开机自启或脚本内部调用）
+reload_argo_tunnels() {
+    check_and_install_python
+    check_and_install_cloudflared || return 1
+
+    if [ ! -f "$NODES_DB" ] || ! grep -q "^TYPE=argo-ws|" "$NODES_DB"; then
+        echo -e "${YELLOW}[WARN] 尚未初始化 Argo 节点，请先通过菜单选项 9 配置。${NC}"
+        return 1
+    fi
+
+    local p_ws p_wstls
+    p_ws=$(grep "^TYPE=argo-ws|" "$NODES_DB" | grep -oP 'PORT=\K[^|]+' | head -n 1)
+    p_wstls=$(grep "^TYPE=argo-wstls|" "$NODES_DB" | grep -oP 'PORT=\K[^|]+' | head -n 1)
+
+    echo -e "\n${CYAN}[INFO] 正在后台重新加载 Argo 临时隧道 (端口 WS:${p_ws} / WS-TLS:${p_wstls})...${NC}"
+    systemctl restart mihomo
+    sleep 1
+
+    launch_argo_tunnels "$p_ws" "$p_wstls" || return 1
+
+    python3 - "$NODES_DB" "$ARGO_DOMAIN_WS" "$ARGO_DOMAIN_WSTLS" << 'PY_EOF'
+import sys
+nodes_db, new_dom_ws, new_dom_wstls = sys.argv[1:4]
+lines = []
+with open(nodes_db, encoding="utf-8") as f:
+    for line in f:
+        l = line.strip()
+        if not l: continue
+        if l.startswith("TYPE=argo-ws|"):
+            parts = [p if not p.startswith("DOMAIN=") else f"DOMAIN={new_dom_ws}" for p in l.split("|")]
+            l = "|".join(parts)
+        elif l.startswith("TYPE=argo-wstls|"):
+            parts = [p if not p.startswith("DOMAIN=") else f"DOMAIN={new_dom_wstls}" for p in l.split("|")]
+            l = "|".join(parts)
+        lines.append(l)
+with open(nodes_db, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+PY_EOF
+
+    trigger_sub_update
+    echo -e "${GREEN}[SUCCESS] Argo 临时域名已自动刷新并同步到客户端订阅！${NC}"
 }
 
 show_menu() {
@@ -898,9 +1039,10 @@ show_menu() {
     echo "6. 添加 ShadowQUIC 服务端节点 (优选 JLS 伪装 + BBR)"
     echo "7. 添加 AnyTLS 四大模式服务端节点 (Standard / Shadow-TLS / ResTLS / JLS)"
     echo "8. 添加 XHTTP 4大变体服务端节点 (Reality / Shadow-TLS / ResTLS / JLS)"
+    echo "9. 添加 Argo 临时隧道双节点 (VLESS-WS + VLESS-WS-TLS, 自动刷新订阅)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-8]: " choice
+    read -p "请选择操作 [0-9]: " choice
 
     case "$choice" in
         1) add_vless_reality_server_config ;;
@@ -911,11 +1053,16 @@ show_menu() {
         6) add_shadowquic_server_config ;;
         7) add_anytls_all_modes_server_config ;;
         8) add_xhttp_all_modes_server_config ;;
+        9) add_argo_ws_server_config ;;
         0) exit 0 ;;
         *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
     esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    show_menu
+    if [[ "$1" == "reload-argo" ]]; then
+        reload_argo_tunnels
+    else
+        show_menu
+    fi
 fi
