@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（精简适配：完美支持 1~8 号协议 + Argo 443 隧道及最新 4 节点优选矩阵）
+# Description: 本地订阅分发守护进程（最终完美版：支持 1~8 号协议 + Argo 443 隧道 + IPv6 中括号修正矩阵）
 # ==============================================================================
 
 RED="\033[31m"
@@ -117,10 +117,10 @@ mi_node_names = []
 box_node_names = []
 
 PREFERRED_CF_IPS = [
-    {"tag": "优选-090227", "addr": "cf.090227.xyz"},
-    {"tag": "优选-182682", "addr": "cloudflare.182682.xyz"},
-    {"tag": "优选-Shopify", "addr": "www.shopify.com"},
-    {"tag": "优选-IPv6", "addr": "2606:4700::0"}
+    {"tag": "优选-090227", "addr": "cf.090227.xyz", "is_v6": False},
+    {"tag": "优选-182682", "addr": "cloudflare.182682.xyz", "is_v6": False},
+    {"tag": "优选-Shopify", "addr": "www.shopify.com", "is_v6": False},
+    {"tag": "优选-IPv6", "addr": "2606:4700::0", "is_v6": True}
 ]
 
 if os.path.exists(nodes_db):
@@ -422,10 +422,13 @@ if os.path.exists(nodes_db):
                     for pref in PREFERRED_CF_IPS:
                         pref_tag = pref["tag"]
                         pref_addr = pref["addr"]
-                        node_label = f"{base_name}-(443端口-{pref_tag})"
+                        is_v6 = pref["is_v6"]
                         
+                        node_label = f"{base_name}-(443端口-{pref_tag})"
                         mi_node_names.append(node_label)
                         box_node_names.append(node_label)
+                        
+                        link_server_addr = f"[{pref_addr}]" if is_v6 else pref_addr
                         
                         mi_proxies.append(f"""  - name: "{node_label}"
     type: vless
@@ -447,7 +450,7 @@ if os.path.exists(nodes_db):
                             "tls": {"enabled": is_tls, "server_name": domain, "insecure": True},
                             "transport": {"type": "ws", "path": path, "headers": {"Host": domain}}
                         })
-                        all_links.append(f"vless://{uuid}@{pref_addr}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(node_label)}")
+                        all_links.append(f"vless://{uuid}@{link_server_addr}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(node_label)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
