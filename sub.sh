@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（终极完美版：通用订阅严格输出 [2606:4700::0]）
+# Description: 本地订阅分发守护进程（完整集成各协议生成与订阅链接动态生成）
 # ==============================================================================
 
 RED="\033[31m"
@@ -33,9 +33,12 @@ detect_firewall() {
 }
 
 cleanup_old_sub_firewall_rules() {
-    local fw_type=$(detect_firewall)
+    local fw_type
+    fw_type=$(detect_firewall)
+
     if [ -f "$PORT_RECORD_FILE" ]; then
-        local old_port=$(cat "$PORT_RECORD_FILE")
+        local old_port
+        old_port=$(cat "$PORT_RECORD_FILE")
         if [[ -n "$old_port" ]]; then
             case "$fw_type" in
                 ufw) ufw delete allow "${old_port}/tcp" >/dev/null 2>&1; ufw reload >/dev/null 2>&1 ;;
@@ -47,7 +50,9 @@ cleanup_old_sub_firewall_rules() {
 }
 
 manage_firewall_port() {
-    local action="$1" port="$2" comment="$3" fw_type=$(detect_firewall)
+    local action="$1" port="$2" comment="$3" fw_type
+    fw_type=$(detect_firewall)
+
     case "$fw_type" in
         ufw) [[ "$action" == "add" ]] && ufw allow "$port/tcp" comment "$comment" >/dev/null 2>&1 && ufw reload >/dev/null 2>&1 ;;
         firewalld) [[ "$action" == "add" ]] && firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
@@ -64,14 +69,6 @@ get_web_port() {
     local target_port=""
     if [ -f "$PORT_RECORD_FILE" ]; then
         target_port=$(cat "$PORT_RECORD_FILE")
-        if [[ "$target_port" =~ ^[0-9]+$ ]] && [ "$target_port" -ge 10000 ] && [ "$target_port" -le 20000 ]; then
-            read -p "是否需要重新生成随机端口和重置 Token？[y/N]: " reset_choice
-            if [[ "$reset_choice" =~ ^[Yy]$ ]]; then
-                cleanup_old_sub_firewall_rules
-                rm -f "$PORT_RECORD_FILE" "$TOKEN_FILE"
-                target_port=""
-            fi
-        fi
     fi
     if [ -z "$target_port" ]; then
         while true; do
@@ -94,7 +91,8 @@ get_public_ip() {
 
 stop_daemon() {
     if [ -f "$PID_FILE" ]; then
-        local pid=$(cat "$PID_FILE")
+        local pid
+        pid=$(cat "$PID_FILE")
         kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
         rm -f "$PID_FILE"
     fi
@@ -116,18 +114,12 @@ all_links = []
 mi_node_names = []
 box_node_names = []
 
-PREFERRED_CF_IPS = [
-    {"tag": "cf-090227", "name_tag": "优选-090227", "addr": "cf.090227.xyz", "is_v6": False},
-    {"tag": "cf-182682", "name_tag": "优选-182682", "addr": "cloudflare.182682.xyz", "is_v6": False},
-    {"tag": "shopify", "name_tag": "优选-Shopify", "addr": "www.shopify.com", "is_v6": False},
-    {"tag": "ipv6", "name_tag": "优选-IPv6", "addr": "2606:4700:4700::1111", "link_addr": "2606:4700::0", "is_v6": True}
-]
-
 if os.path.exists(nodes_db):
     with open(nodes_db, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line: continue
+            
             parts = {k: v for item in line.split("|") if "=" in item for k, v in [item.split("=", 1)]}
             node_type = parts.get("TYPE")
 
@@ -250,6 +242,7 @@ if os.path.exists(nodes_db):
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
                 dest_raw = parts.get("DEST", "")
                 domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+
                 mi_node_names.append(name)
                 if mode == "standard":
                     mi_proxies.append(f"""  - name: "{name}"
@@ -261,7 +254,7 @@ if os.path.exists(nodes_db):
     udp: true""")
                     box_node_names.append(name)
                     box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
-                    all_links.append(f"anytls://{password}@{ip}:{port_val}?insecure=1&security=tls&type=tcp&headerType=none#{urllib.parse.quote(name)}")
+                    all_links.append(f"anytls://{password}@{ip}:{port_val}?insecure=1&security=tls&type=tcp#{urllib.parse.quote(name)}")
                 elif mode == "shadowtls":
                     mi_proxies.append(f"""  - name: "{name}"
     type: anytls
@@ -319,6 +312,7 @@ if os.path.exists(nodes_db):
       short-id: {shortid}
       support-x25519mlkem768: false""")
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
+
             elif node_type == "xhttp-shadowtls":
                 name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -333,7 +327,6 @@ if os.path.exists(nodes_db):
     network: xhttp
     tls: true
     udp: true
-    client-fingerprint: chrome
     servername: {domain}
     xhttp-opts:
       path: "/yindun-xst"
@@ -343,6 +336,7 @@ if os.path.exists(nodes_db):
       version: 3
       password: "{password}"
       servername: "{domain}" """)
+
             elif node_type == "xhttp-restls":
                 name = parts.get("NAME", "xhttp-rtls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -365,6 +359,7 @@ if os.path.exists(nodes_db):
     restls-opts:
       password: "{password}"
       version-hint: "tls13" """)
+
             elif node_type == "xhttp-jls":
                 name = parts.get("NAME", "xhttp-jls-node").replace("-in-", "-out-")
                 ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
@@ -388,71 +383,30 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            elif node_type == "argo-wstls":
-                base_name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
-                domain = parts.get("DOMAIN")
-                uuid = parts.get("UUID")
-                path = parts.get("PATH", "/yindun-argo-wstls")
-                port = 443
-                is_tls = True
-                
-                if domain and uuid:
-                    main_name = f"{base_name}-443-main"
-                    mi_node_names.append(main_name)
-                    box_node_names.append(main_name)
-                    
-                    mi_proxies.append(f"""  - name: "{main_name}"
+            elif node_type == "xhttp-h3":
+                name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
+                ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "cloudflare.com")
+                fingerprint = parts.get("FINGERPRINT", "")
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
     type: vless
-    server: {domain}
-    port: {port}
+    server: {ip}
+    port: {port_val}
     uuid: {uuid}
-    network: ws
+    network: xhttp
     tls: true
     udp: true
+    skip-cert-verify: false
+    fingerprint: {fingerprint}
+    client-fingerprint: chrome
     servername: {domain}
-    ws-opts:
-      path: "{path}" """)
-                    
-                    box_outbounds.append({
-                        "type": "vless", "tag": main_name, "server": domain, "server_port": port, "uuid": uuid, "network": "ws",
-                        "tls": {"enabled": is_tls, "server_name": domain}, "transport": {"type": "ws", "path": path}
-                    })
-                    all_links.append(f"vless://{uuid}@{domain}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(main_name)}")
-
-                    for pref in PREFERRED_CF_IPS:
-                        pref_tag = pref["tag"]
-                        pref_addr = pref["addr"]
-                        is_v6 = pref["is_v6"]
-                        link_addr = pref.get("link_addr", pref_addr)
-                        
-                        node_label = f"{base_name}-443-{pref_tag}"
-                        mi_node_names.append(node_label)
-                        box_node_names.append(node_label)
-                        
-                        # 核心修改：如果是 IPv6，强制使用 link_addr（即严格的 2606:4700::0）拼入通用订阅链接
-                        link_server_addr = f"[{link_addr}]" if is_v6 else pref_addr
-                        
-                        mi_proxies.append(f"""  - name: "{node_label}"
-    type: vless
-    server: {pref_addr}
-    port: {port}
-    uuid: {uuid}
-    network: ws
-    tls: true
-    udp: true
-    servername: {domain}
-    skip-cert-verify: true
-    ws-opts:
-      path: "{path}"
-      headers:
-        Host: {domain}""")
-                        
-                        box_outbounds.append({
-                            "type": "vless", "tag": node_label, "server": pref_addr, "server_port": port, "uuid": uuid, "network": "ws",
-                            "tls": {"enabled": is_tls, "server_name": domain, "insecure": True},
-                            "transport": {"type": "ws", "path": path, "headers": {"Host": domain}}
-                        })
-                        all_links.append(f"vless://{uuid}@{link_server_addr}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(node_label)}")
+    alpn:
+      - h3
+    xhttp-opts:
+      path: "yindun-xh3"
+      host: "{domain}"
+      mode: "auto" """)
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pcs={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
@@ -578,24 +532,18 @@ EOF
 }
 
 start_daemon() {
-    local config_script="$(dirname "${BASH_SOURCE[0]}")/config.sh"
-    [ ! -f "$config_script" ] && config_script="${CONFIG_DIR}/config.sh"
-    if [ -f "$config_script" ]; then
-        echo -e "${CYAN}[INFO] 正在自动触发底层 config.sh 刷新 Argo 443 隧道与域名...${NC}"
-        bash "$config_script" reload-argo
-    fi
-
-    [ ! -f "$NODES_DB" ] && touch "$NODES_DB"
+    [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
     stop_daemon
-    [ ! -f "$TOKEN_FILE" ] && openssl rand -hex 32 > "$TOKEN_FILE"
+    [ ! -f "${CONFIG_DIR}/sub_token.txt" ] && openssl rand -hex 32 > "${CONFIG_DIR}/sub_token.txt"
 
     local web_port=$(get_web_port)
-    SUB_TOKEN=$(cat "$TOKEN_FILE")
+    local SUB_TOKEN=$(cat "${CONFIG_DIR}/sub_token.txt")
 
+    cleanup_old_sub_firewall_rules
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
     prepare_python_server
-    manage_firewall_port "add" "$web_port" "tcp" "YinDun-Sub-${web_port}"
+    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
     local server_ip=$(get_public_ip)
 
     cd "${CONFIG_DIR}" || exit
@@ -603,7 +551,7 @@ start_daemon() {
     echo $! > "$PID_FILE"
 
     echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动并生成节点矩阵！${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
     echo -e "${GREEN}========================================================${NC}"
     echo -e "1. Base64 聚合订阅 (通用/Clash): ${CYAN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
     echo -e "2. 明文链接列表 (Raw Links)   : ${CYAN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
