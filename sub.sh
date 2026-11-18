@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整支持 Reality、Hy2、TUIC、AnyTLS、XHTTP 及 Argo 临时隧道节点）
+# Description: 本地订阅分发守护进程（启动时自动调用底层重载 Argo 临时域名并生成全协议订阅）
 # ==============================================================================
 
 RED="\033[31m"
@@ -33,12 +33,9 @@ detect_firewall() {
 }
 
 cleanup_old_sub_firewall_rules() {
-    local fw_type
-    fw_type=$(detect_firewall)
-
+    local fw_type=$(detect_firewall)
     if [ -f "$PORT_RECORD_FILE" ]; then
-        local old_port
-        old_port=$(cat "$PORT_RECORD_FILE")
+        local old_port=$(cat "$PORT_RECORD_FILE")
         if [[ -n "$old_port" ]]; then
             case "$fw_type" in
                 ufw) ufw delete allow "${old_port}/tcp" >/dev/null 2>&1; ufw reload >/dev/null 2>&1 ;;
@@ -50,9 +47,7 @@ cleanup_old_sub_firewall_rules() {
 }
 
 manage_firewall_port() {
-    local action="$1" port="$2" comment="$3" fw_type
-    fw_type=$(detect_firewall)
-
+    local action="$1" port="$2" comment="$3" fw_type=$(detect_firewall)
     case "$fw_type" in
         ufw) [[ "$action" == "add" ]] && ufw allow "$port/tcp" comment "$comment" >/dev/null 2>&1 && ufw reload >/dev/null 2>&1 ;;
         firewalld) [[ "$action" == "add" ]] && firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
@@ -99,8 +94,7 @@ get_public_ip() {
 
 stop_daemon() {
     if [ -f "$PID_FILE" ]; then
-        local pid
-        pid=$(cat "$PID_FILE")
+        local pid=$(cat "$PID_FILE")
         kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
         rm -f "$PID_FILE"
     fi
@@ -127,7 +121,6 @@ if os.path.exists(nodes_db):
         for line in f:
             line = line.strip()
             if not line: continue
-            
             parts = {k: v for item in line.split("|") if "=" in item for k, v in [item.split("=", 1)]}
             node_type = parts.get("TYPE")
 
@@ -195,7 +188,7 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "tuic", "tag": name, "server": ip, "server_port": int(port_val), "uuid": tuic_uuid, "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}, "congestion_control": "bbr"})
                 all_links.append(f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{urllib.parse.quote(name)}")
 
-            # D. Mieru TCP / UDP
+            # D. Mieru
             elif node_type in ["mieru-tcp", "mieru-udp"]:
                 name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
@@ -250,7 +243,7 @@ if os.path.exists(nodes_db):
     congestion-controller: bbr""")
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-            # G. AnyTLS 四大模式
+            # G. AnyTLS
             elif node_type == "anytls":
                 name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
                 mode = parts.get("MODE", "standard")
@@ -303,7 +296,100 @@ if os.path.exists(nodes_db):
       username: "{username}"
       password: "{password}" """)
 
-            # H. Argo 临时隧道双节点支持 (WS & WS-TLS)
+            # H. XHTTP
+            elif node_type == "xhttp-reality":
+                name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
+                ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    client-fingerprint: chrome
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xr"
+      host: "{domain}"
+      mode: "stream-up"
+    reality-opts:
+      public-key: {pub}
+      short-id: {shortid}
+      support-x25519mlkem768: false""")
+                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
+            elif node_type == "xhttp-shadowtls":
+                name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
+                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "download.nvidia.com:443")
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    client-fingerprint: chrome
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xst"
+      host: "{domain}"
+      mode: "stream-up"
+    shadow-tls-opts:
+      version: 3
+      password: "{password}"
+      servername: "{domain}" """)
+            elif node_type == "xhttp-restls":
+                name = parts.get("NAME", "xhttp-rtls-node").replace("-in-", "-out-")
+                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "cdn.akamai.steamstatic.com:443")
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xrt"
+      host: "{domain}"
+      mode: "stream-up"
+    restls-opts:
+      password: "{password}"
+      version-hint: "tls13" """)
+            elif node_type == "xhttp-jls":
+                name = parts.get("NAME", "xhttp-jls-node").replace("-in-", "-out-")
+                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
+                dest_raw = parts.get("DEST", "update.code.visualstudio.com:443")
+                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
+                mi_node_names.append(name)
+                mi_proxies.append(f"""  - name: "{name}"
+    type: vless
+    server: {ip}
+    port: {port_val}
+    uuid: {uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: {domain}
+    xhttp-opts:
+      path: "/yindun-xj"
+      host: "{domain}"
+      mode: "stream-up"
+    jls-opts:
+      username: "1"
+      password: "{password}" """)
+
+            # I. Argo 临时隧道双节点 (WS & WS-TLS)
             elif node_type in ["argo-ws", "argo-wstls"]:
                 name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
                 domain = parts.get("DOMAIN")
@@ -324,14 +410,8 @@ if os.path.exists(nodes_db):
     ws-opts:
       path: "{path}" """)
                     box_outbounds.append({
-                        "type": "vless",
-                        "tag": name,
-                        "server": domain,
-                        "server_port": 443,
-                        "uuid": uuid,
-                        "network": "ws",
-                        "tls": {"enabled": True, "server_name": domain},
-                        "transport": {"type": "ws", "path": path}
+                        "type": "vless", "tag": name, "server": domain, "server_port": 443, "uuid": uuid, "network": "ws",
+                        "tls": {"enabled": True, "server_name": domain}, "transport": {"type": "ws", "path": path}
                     })
                     all_links.append(f"vless://{uuid}@{domain}:443?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(name)}")
 
@@ -459,27 +539,33 @@ EOF
 }
 
 start_daemon() {
+    # 核心闭环：每次启动 sub.sh 时，自动先呼叫同目录下的 config.sh 刷新 Argo 临时隧道与域名
+    local config_script="$(dirname "${BASH_SOURCE[0]}")/config.sh"
+    [ ! -f "$config_script" ] && config_script="${CONFIG_DIR}/config.sh"
+    if [ -f "$config_script" ]; then
+        echo -e "${CYAN}[INFO] 正在自动触发底层 config.sh 刷新 Argo 临时隧道与域名...${NC}"
+        bash "$config_script" reload-argo
+    fi
+
     [ ! -f "$NODES_DB" ] && touch "$NODES_DB"
     stop_daemon
     [ ! -f "$TOKEN_FILE" ] && openssl rand -hex 32 > "$TOKEN_FILE"
 
-    local web_port
-    web_port=$(get_web_port | grep -oE '[0-9]+' | tail -n 1)
+    local web_port=$(get_web_port)
     SUB_TOKEN=$(cat "$TOKEN_FILE")
 
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
     prepare_python_server
-    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
-    local server_ip
-    server_ip=$(get_public_ip)
+    manage_firewall_port "add" "$web_port" "tcp" "YinDun-Sub-${web_port}"
+    local server_ip=$(get_public_ip)
 
     cd "${CONFIG_DIR}" || exit
     nohup python3 sub_server.py "$web_port" "$SUB_TOKEN" "${CONFIG_DIR}" >/dev/null 2>&1 &
     echo $! > "$PID_FILE"
 
     echo -e "\n${GREEN}========================================================${NC}"
-    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动！${NC}"
+    echo -e "${GREEN}  YinDun 客户端订阅守护进程已成功启动并完成数据同步！${NC}"
     echo -e "${GREEN}========================================================${NC}"
     echo -e "1. Base64 聚合订阅 (通用/Clash): ${CYAN}http://${server_ip}:${web_port}/?token=${SUB_TOKEN}${NC}"
     echo -e "2. 明文链接列表 (Raw Links)   : ${CYAN}http://${server_ip}:${web_port}/raw?token=${SUB_TOKEN}${NC}"
