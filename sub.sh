@@ -473,10 +473,14 @@ if os.path.exists(nodes_db):
                 for suffix, remote_host in argo_variants:
                     n_name = f"{base_name}-{suffix}"
                     mi_node_names.append(n_name)
+                    box_node_names.append(n_name)
                     
                     is_ip6 = remote_host.startswith("[") or ":" in remote_host
                     addr_val = remote_host.strip("[]") if is_ip6 else remote_host
+                    uri_addr = f"[{addr_val}]" if is_ip6 else addr_val
+
                     sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
+                    host_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
 
                     mi_proxies.append(f"""  - name: "{n_name}"
     type: vless
@@ -491,9 +495,29 @@ if os.path.exists(nodes_db):
     ws-opts:
       path: "/yindun-argo-wstls"
       headers:
-        Host: {argo_temp_domain if argo_temp_domain else "trycloudflare.com"}""")
+        Host: {host_val}""")
 
-                    all_links.append(f"vless://{uuid}@{addr_val}:443?encryption=none&security=tls&sni={sni_val}&type=ws&host={argo_temp_domain if argo_temp_domain else 'trycloudflare.com'}&path=%2Fyindun-argo-wstls#{urllib.parse.quote(n_name)}")
+                    box_outbounds.append({
+                        "type": "vless",
+                        "tag": n_name,
+                        "server": addr_val,
+                        "server_port": 443,
+                        "uuid": uuid,
+                        "tls": {
+                            "enabled": True,
+                            "server_name": sni_val,
+                            "insecure": True
+                        },
+                        "transport": {
+                            "type": "ws",
+                            "path": "/yindun-argo-wstls",
+                            "headers": {
+                                "Host": host_val
+                            }
+                        }
+                    })
+
+                    all_links.append(f"vless://{uuid}@{uri_addr}:443?encryption=none&security=tls&sni={sni_val}&type=ws&host={host_val}&path=%2Fyindun-argo-wstls#{urllib.parse.quote(n_name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
