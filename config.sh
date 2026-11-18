@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 完整支持所有协议及纯净平铺 Argo 443 TLS 隧道的管理脚本
+# Description: 终极修复版：支持 1~9 号协议全量增量合并写入，永不覆盖其他节点
 # ==============================================================================
 
 RED="\033[31m"
@@ -203,6 +203,7 @@ port = int(port_str)
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=vless-reality|")] if os.path.exists(nodes_db) else []
 existing.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -210,14 +211,16 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
     except: pass
+
 listeners.append({
     "name": node_name, "type": "vless", "port": port, "listen": "0.0.0.0",
     "users": [{"username": "1", "uuid": uuid, "flow": "xtls-rprx-vision"}],
     "reality-config": {"dest": f"{server_name}:443", "private-key": priv, "short-id": [short_id], "server-names": [server_name]}
 })
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] VLESS-REALITY 服务端入站配置完成！${NC}"
@@ -253,6 +256,7 @@ port = int(port_str)
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=hysteria2|")] if os.path.exists(nodes_db) else []
 existing.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -260,13 +264,15 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
     except: pass
+
 listeners.append({
     "name": node_name, "type": "hysteria2", "port": port, "listen": "0.0.0.0",
     "users": {"1": password}, "alpn": ["h3"], "certificate": cert_file, "private-key": key_file
 })
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] Hysteria 2 服务端入站配置完成！${NC}"
@@ -303,6 +309,7 @@ port = int(port_str)
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=tuic|")] if os.path.exists(nodes_db) else []
 existing.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -310,14 +317,16 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
     except: pass
+
 listeners.append({
     "name": node_name, "type": "tuic", "port": port, "listen": "0.0.0.0",
     "users": {tuic_uuid: password}, "congestion-controller": "bbr", "alpn": ["h3"],
     "certificate": cert_file, "private-key": key_file
 })
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] TUIC v5 服务端入站配置完成！${NC}"
@@ -358,6 +367,7 @@ t_port, u_port = int(t_port_s), int(u_port_s)
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=mieru-tcp|") and not l.startswith("TYPE=mieru-udp|")] if os.path.exists(nodes_db) else []
 existing.extend([rec_t, rec_u])
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -365,11 +375,13 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") not in [t_name, u_name]]
     except: pass
+
 listeners.append({"name": t_name, "type": "mieru", "port": t_port, "listen": "0.0.0.0", "transport": "TCP", "users": {t_user: t_pass}})
 listeners.append({"name": u_name, "type": "mieru", "port": u_port, "listen": "0.0.0.0", "transport": "UDP", "users": {u_user: u_pass}})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] Mieru (TCP & UDP) 服务端入站配置完成！${NC}"
@@ -399,6 +411,7 @@ port = int(port_str)
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=snell|")] if os.path.exists(nodes_db) else []
 existing.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -406,10 +419,12 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
     except: pass
+
 listeners.append({"name": node_name, "type": "snell", "port": port, "listen": "0.0.0.0", "psk": psk, "version": 6, "udp": True, "mode": "default"})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] Snell v6 原生入站配置已写入并重启！${NC}"
@@ -443,6 +458,7 @@ port = int(port_str)
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=shadowquic|")] if os.path.exists(nodes_db) else []
 existing.append(db_record)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -450,10 +466,12 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
     except: pass
+
 listeners.append({"name": node_name, "type": "shadowquic", "port": port, "listen": "0.0.0.0", "users": [{"username": user, "password": passwd}], "jls-upstream": {"addr": jls}, "congestion-controller": "bbr"})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] ShadowQUIC 服务端入站配置完成！${NC}"
@@ -518,6 +536,7 @@ new_records = [rec_std, rec_stls, rec_rtls, rec_jls]
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and "TYPE=anytls" not in l] if os.path.exists(nodes_db) else []
 existing.extend(new_records)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -525,13 +544,15 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") not in anytls_names]
     except: pass
+
 listeners.append({"name": n_std, "type": "anytls", "port": int(p_std), "listen": "0.0.0.0", "users": {u_std: pw_std}, "certificate": crt, "private-key": key})
 listeners.append({"name": n_stls, "type": "anytls", "port": int(p_stls), "listen": "0.0.0.0", "users": {u_stls: pw_stls}, "shadow-tls": {"enable": True, "version": 3, "users": [{"name": u_stls, "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}})
 listeners.append({"name": n_rtls, "type": "anytls", "port": int(p_rtls), "listen": "0.0.0.0", "users": {u_rtls: pw_rtls}, "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}})
 listeners.append({"name": n_jls, "type": "anytls", "port": int(p_jls), "listen": "0.0.0.0", "users": {u_jls: pw_jls}, "jls-config": {"enable": True, "users": [{"username": u_jls, "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置完成！${NC}"
@@ -607,6 +628,7 @@ new_records = [rec_xr, rec_xst, rec_xrt, rec_xj]
 existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not any(t in l for t in ["TYPE=xhttp-reality", "TYPE=xhttp-shadowtls", "TYPE=xhttp-restls", "TYPE=xhttp-jls"])] if os.path.exists(nodes_db) else []
 existing.extend(new_records)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+
 listeners = []
 if os.path.exists(config_path):
     try:
@@ -614,19 +636,21 @@ if os.path.exists(config_path):
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
             listeners = [l for l in loaded["listeners"] if l.get("name") not in xhttp_names]
     except: pass
+
 listeners.append({"name": n_xr, "type": "vless", "port": int(p_xr), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xr, "flow": ""}], "xhttp-config": {"path": "/yindun-xr", "host": d_xr, "mode": "stream-up", "uplink-http-method": "POST"}, "reality-config": {"dest": f"{d_xr}:443", "private-key": priv, "short-id": [sid], "server-names": [d_xr]}})
 listeners.append({"name": n_xst, "type": "vless", "port": int(p_xst), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xst, "flow": ""}], "xhttp-config": {"path": "/yindun-xst", "host": d_stls, "mode": "stream-up", "uplink-http-method": "POST"}, "shadow-tls": {"enable": True, "version": 3, "users": [{"name": "1", "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}})
 listeners.append({"name": n_xrt, "type": "vless", "port": int(p_xrt), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xrt, "flow": ""}], "xhttp-config": {"path": "/yindun-xrt", "host": d_rtls, "mode": "stream-up", "uplink-http-method": "POST"}, "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}})
 listeners.append({"name": n_xj, "type": "vless", "port": int(p_xj), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xj, "flow": ""}], "xhttp-config": {"path": "/yindun-xj", "host": d_jls, "mode": "stream-up", "uplink-http-method": "POST"}, "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}})
-blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
-with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
     systemctl restart mihomo
     echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
 }
 
-# 9. Argo 纯净 443 TLS 隧道（带平铺格式与安全容错键读取）
+# 9. Argo 纯净 443 TLS 隧道（多节点增量合并写入）
 launch_argo_tunnel() {
     local p_wstls="$1"
     local cf_bin="${CONFIG_DIR}/cloudflared"
@@ -692,6 +716,7 @@ if os.path.exists(config_path):
     try:
         loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
         if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            # 增量过滤掉旧的同名argo节点，保留其他所有 1~8 号协议节点！
             listeners = [l for l in loaded["listeners"] if l.get("name") not in {name, "argo-ws-in-hk2t", "argo-wstls-in-hk2t"}]
     except: pass
 
@@ -714,29 +739,9 @@ new_listener = {
 
 listeners.append(new_listener)
 
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f:
-    f.write("listeners:\n")
-    for item in listeners:
-        f.write(f"  - name: {item.get('name', 'unknown')}\n")
-        f.write(f"    type: {item.get('type', 'vless')}\n")
-        f.write(f"    port: {int(item.get('port', 443))}\n")
-        f.write(f"    listen: {item.get('listen', '127.0.0.1')}\n")
-        f.write(f"    users:\n")
-        users = item.get('users', [{"username": "1", "uuid": uuid, "flow": ""}])
-        for u in users:
-            f.write(f"      - username: '{u.get('username', '1')}'\n")
-            f.write(f"        uuid: {u.get('uuid', uuid)}\n")
-            f.write(f"        flow: '{u.get('flow', '')}'\n")
-        
-        path = item.get('ws-path')
-        if not path and 'ws-config' in item and isinstance(item['ws-config'], dict):
-            path = item['ws-config'].get('path', '/yindun-argo-wstls')
-        if not path:
-            path = '/yindun-argo-wstls'
-            
-        f.write(f"    ws-path: \"{path}\"\n")
-        f.write(f"    certificate: {item.get('certificate', crt)}\n")
-        f.write(f"    private-key: {item.get('private-key', key)}\n\n")
+    yaml.safe_dump({"listeners": listeners}, f, allow_unicode=True, sort_keys=False)
 PY_EOF
 
     systemctl restart mihomo
