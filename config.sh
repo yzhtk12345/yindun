@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Server Configuration Manager (config.sh)
-# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS 及 5 大 XHTTP 变体原生入站管理
+# Description: 支持 VLESS-REALITY、Hysteria 2、TUIC v5、Mieru、Snell v6、ShadowQUIC、AnyTLS 及 4 大 XHTTP 变体原生入站管理
 # ==============================================================================
 
 RED="\033[31m"
@@ -735,7 +735,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] AnyTLS 四大模式服务端入站配置完成！${NC}"
 }
 
-# 8. XHTTP 系列节点 (带 xhttp-h3 独立自签证书与 SHA-256 指纹自动生成 - 完美对齐 network: xhttp 与 mode: auto)
+# 8. XHTTP 系列节点 (4 大稳定变体：Reality / Shadow-TLS / ResTLS / JLS)
 add_xhttp_all_modes_server_config() {
     check_and_install_python
     check_and_install_dependencies
@@ -743,12 +743,11 @@ add_xhttp_all_modes_server_config() {
     cleanup_firewall_by_type "xhttp-shadowtls"
     cleanup_firewall_by_type "xhttp-restls"
     cleanup_firewall_by_type "xhttp-jls"
-    cleanup_firewall_by_type "xhttp-h3"
     local host_name
     host_name=$(hostname)
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}  开始配置并写入 XHTTP 5大变体服务端入站 (多域名不重复)   ${NC}"
+    echo -e "${CYAN}  开始配置并写入 XHTTP 4大变体服务端入站 (多域名不重复)   ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
     local mihomo_bin="${CONFIG_DIR}/mihomo"
@@ -770,35 +769,20 @@ add_xhttp_all_modes_server_config() {
     local x_dom_jls
     x_dom_jls=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "registry.npmjs.org")
 
-    echo -e "${CYAN}[INFO] 正在为 XHTTP-H3-UDP 优选云服务CDN域名...${NC}"
-    local x_dom_h3
-    x_dom_h3=$(select_best_domain_from_list "cloudflare.com" "cloudflare.com" "speed.cloudflare.com")
-
-    # 为 xhttp-h3 生成专属自签证书
-    local cert_dir="${CONFIG_DIR}/cert"
-    mkdir -p "$cert_dir"
-    local h3_crt="${cert_dir}/xhttp_h3.crt"
-    local h3_key="${cert_dir}/xhttp_h3.key"
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$h3_key" -out "$h3_crt" -days 3650 -subj "/CN=${x_dom_h3}" 2>/dev/null
-    local h3_fingerprint
-    h3_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$h3_crt" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-
     local server_ip
     server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "45.207.156.146")
 
-    echo -e "${CYAN}[INFO] 正在为 5 种 XHTTP 变体自动分配端口...${NC}"
-    local p_xr p_xst p_xrt p_xj p_xh3
+    echo -e "${CYAN}[INFO] 正在为 4 种 XHTTP 变体自动分配端口...${NC}"
+    local p_xr p_xst p_xrt p_xj
     p_xr=$(get_available_port "auto" "")
     p_xst=$(get_available_port "auto" "")
     p_xrt=$(get_available_port "auto" "")
     p_xj=$(get_available_port "auto" "")
-    p_xh3=$(get_available_port "auto" "")
 
     manage_firewall_port "add" "$p_xr" "tcp" "YinDun-XHTTP-Reality-${p_xr}"
     manage_firewall_port "add" "$p_xst" "tcp" "YinDun-XHTTP-ShadowTLS-${p_xst}"
     manage_firewall_port "add" "$p_xrt" "tcp" "YinDun-XHTTP-ResTLS-${p_xrt}"
     manage_firewall_port "add" "$p_xj" "tcp" "YinDun-XHTTP-JLS-${p_xj}"
-    manage_firewall_port "add" "$p_xh3" "udp" "YinDun-XHTTP-H3-${p_xh3}"
 
     local kp_xr priv_xr pub_xr sid_xr
     kp_xr=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
@@ -806,12 +790,11 @@ add_xhttp_all_modes_server_config() {
     pub_xr=$(echo "$kp_xr" | awk '/PublicKey:/ {print $2}' | tr -d '\r\n')
     sid_xr=$(openssl rand -hex 8 2>/dev/null | tr -d '\r\n')
 
-    local uuid_base uuid_stls uuid_rtls uuid_jls uuid_h3
+    local uuid_base uuid_stls uuid_rtls uuid_jls
     uuid_base=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     uuid_stls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     uuid_rtls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     uuid_jls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
-    uuid_h3=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
 
     local stls_pass restls_pass jls_pass
     stls_pass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)
@@ -822,20 +805,17 @@ add_xhttp_all_modes_server_config() {
     local name_xst="xhttp-shadowtls-in-${host_name}"
     local name_xrt="xhttp-restls-in-${host_name}"
     local name_xj="xhttp-jls-in-${host_name}"
-    local name_xh3="xhttp-h3-in-${host_name}"
 
     local r_xr="TYPE=xhttp-reality|NAME=${name_xr}|PORT=${p_xr}|UUID=${uuid_base}|PRIV=${priv_xr}|PUB=${pub_xr}|SHORTID=${sid_xr}|DOMAIN=${x_dom_reality}|IP=${server_ip}"
     local r_xst="TYPE=xhttp-shadowtls|NAME=${name_xst}|PORT=${p_xst}|UUID=${uuid_stls}|PASS=${stls_pass}|DEST=${x_dom_stls}:443|IP=${server_ip}"
     local r_xrt="TYPE=xhttp-restls|NAME=${name_xrt}|PORT=${p_xrt}|UUID=${uuid_rtls}|PASS=${restls_pass}|DEST=${x_dom_rtls}:443|IP=${server_ip}"
     local r_xj="TYPE=xhttp-jls|NAME=${name_xj}|PORT=${p_xj}|UUID=${uuid_jls}|PASS=${jls_pass}|DEST=${x_dom_jls}:443|SNI=${x_dom_jls}|IP=${server_ip}"
-    local r_xh3="TYPE=xhttp-h3|NAME=${name_xh3}|PORT=${p_xh3}|UUID=${uuid_h3}|DOMAIN=${x_dom_h3}|FINGERPRINT=${h3_fingerprint}|CRT=${h3_crt}|KEY=${h3_key}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" \
         "$name_xr" "$p_xr" "$uuid_base" "$x_dom_reality" "$priv_xr" "$pub_xr" "$sid_xr" "$r_xr" \
         "$name_xst" "$p_xst" "$uuid_stls" "$stls_pass" "$x_dom_stls" "$r_xst" \
         "$name_xrt" "$p_xrt" "$uuid_rtls" "$restls_pass" "$x_dom_rtls" "$r_xrt" \
-        "$name_xj" "$p_xj" "$uuid_jls" "$jls_pass" "$x_dom_jls" "$r_xj" \
-        "$name_xh3" "$p_xh3" "$uuid_h3" "$x_dom_h3" "$h3_crt" "$h3_key" "$r_xh3" << 'PY_EOF'
+        "$name_xj" "$p_xj" "$uuid_jls" "$jls_pass" "$x_dom_jls" "$r_xj" << 'PY_EOF'
 import sys, os, yaml
 args = sys.argv[1:]
 config_path, nodes_db = args[0], args[1]
@@ -844,10 +824,9 @@ n_xr, p_xr, u_xr, d_xr, priv, pub, sid, rec_xr = args[2:10]
 n_xst, p_xst, u_xst, pw_stls, d_stls, rec_xst = args[10:16]
 n_xrt, p_xrt, u_xrt, pw_rtls, d_rtls, rec_xrt = args[16:22]
 n_xj, p_xj, u_xj, pw_jls, d_jls, rec_xj = args[22:28]
-n_xh3, p_xh3, u_xh3, d_h3, h3_crt, h3_key, rec_xh3 = args[28:35]
 
-xhttp_names = {n_xr, n_xst, n_xrt, n_xj, n_xh3}
-new_records = [rec_xr, rec_xst, rec_xrt, rec_xj, rec_xh3]
+xhttp_names = {n_xr, n_xst, n_xrt, n_xj}
+new_records = [rec_xr, rec_xst, rec_xrt, rec_xj]
 
 existing = []
 if os.path.exists(nodes_db):
@@ -855,7 +834,7 @@ if os.path.exists(nodes_db):
         for line in f:
             l = line.strip()
             if not l: continue
-            if any(t in l for t in ["TYPE=xhttp-reality", "TYPE=xhttp-shadowtls", "TYPE=xhttp-restls", "TYPE=xhttp-jls", "TYPE=xhttp-h3"]):
+            if any(t in l for t in ["TYPE=xhttp-reality", "TYPE=xhttp-shadowtls", "TYPE=xhttp-restls", "TYPE=xhttp-jls"]):
                 continue
             existing.append(l)
 existing.extend(new_records)
@@ -897,24 +876,13 @@ listeners.append({
     "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}
 })
 
-# 完美对齐：xhttp-h3 入站采用 network: xhttp 配合 mode: auto 以及标准 path
-listeners.append({
-    "name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0",
-    "users": [{"username": "1", "uuid": u_xh3, "flow": ""}],
-    "network": "xhttp",
-    "xhttp-config": {"path": "/yindun-xh3", "host": d_h3, "mode": "auto"},
-    "alpn": ["h3"],
-    "certificate": h3_crt,
-    "private-key": h3_key
-})
-
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
 
     systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] XHTTP 5大变体服务端入站配置已全部写入并成功重启！${NC}"
+    echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
 }
 
 show_menu() {
@@ -929,7 +897,7 @@ show_menu() {
     echo "5. 添加 Snell v6 (Mihomo 原生入站) 服务端节点"
     echo "6. 添加 ShadowQUIC 服务端节点 (优选 JLS 伪装 + BBR)"
     echo "7. 添加 AnyTLS 四大模式服务端节点 (Standard / Shadow-TLS / ResTLS / JLS)"
-    echo "8. 添加 XHTTP 5大变体服务端节点 (Reality / Shadow-TLS / ResTLS / JLS / H3-UDP)"
+    echo "8. 添加 XHTTP 4大变体服务端节点 (Reality / Shadow-TLS / ResTLS / JLS)"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
     read -p "请选择操作 [0-8]: " choice
