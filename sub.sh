@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整集成各协议生成与开机自启自动注册 - HTTP2 优化版）
+# Description: 本地订阅分发守护进程（内置一键免操作全自动 Cron 开机驻守）
 # ==============================================================================
 
 RED="\033[31m"
@@ -21,7 +21,6 @@ ARGO_DOMAIN_FILE="${CONFIG_DIR}/argo_domain.txt"
 ARGO_PID_FILE="${CONFIG_DIR}/argo.pid"
 ARGO_LOG_FILE="${CONFIG_DIR}/argo.log"
 CLOUDFLARED_BIN="${CONFIG_DIR}/cloudflared"
-SERVICE_FILE="/etc/systemd/system/yindun-sub.service"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 
 mkdir -p "$CONFIG_DIR"
@@ -122,17 +121,15 @@ manage_argo_tunnel() {
 
     install_cloudflared
 
-    # 1. 强力清理旧进程和旧状态文件
     pkill -9 -f "cloudflared tunnel" 2>/dev/null
     rm -f "$ARGO_PID_FILE" "$ARGO_DOMAIN_FILE" "$ARGO_LOG_FILE"
 
     echo -e "${CYAN}[INFO] 正在启动 Argo 临时隧道并等待获取有效域名 (绑定本地端口: ${argo_port})...${NC}"
     
-    # 2. 强制指定 --protocol http2 规避 7844 端口 QUIC 阻断，确保开机连通率[cite: 7]
+    # 强制使用 HTTP2 协议，保证开机连通率稳定
     nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate --protocol http2 > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
-    # 3. 严格等待循环：确保抓取到有效域名才继续，最多等待 30 秒（15次 * 2秒）
     local count=0
     local argo_domain=""
     while [ $count -lt 15 ]; do
@@ -141,7 +138,7 @@ manage_argo_tunnel() {
             argo_domain=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$ARGO_LOG_FILE" | head -n 1 | sed 's|https://||')
             if [ -n "$argo_domain" ]; then
                 echo "$argo_domain" > "$ARGO_DOMAIN_FILE"
-                echo -e "${GREEN}[SUCCESS] Argo 临时域名获取成功: ${argo_domain}${NC}"
+                echo -e "${GREEN}[SUCCESS] Argo 隧道临时域名获取成功: ${argo_domain}${NC}"
                 return 0
             fi
         fi
@@ -630,44 +627,15 @@ http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler).serve_forever()
 EOF
 }
 
-# 自动注册并检测 systemd 开机自启服务的函数（已加入网络就绪与 10 秒延迟等待优化）
-check_and_setup_autostart() {
-    if [ ! -f "$SERVICE_FILE" ]; then
-        local create_service="y"
-        if [ -t 0 ]; then
-            echo -e "${YELLOW}[INFO] 检测到系统尚未配置该订阅服务的“开机自启”。${NC}"
-            read -p "是否需要一键为你配置系统开机自启？[Y/n] (默认回车直接配置): " create_service
-            [[ -z "$create_service" ]] && create_service="y"
-        fi
-
-        if [[ "$create_service" == "y" || "$create_service" == "Y" ]]; then
-            echo -e "${CYAN}[INFO] 正在自动写入并注册优化的 systemd 开机自启服务...${NC}"
-            cat << EOF > "$SERVICE_FILE"
-[Unit]
-Description=YinDun Subscription Daemon
-After=network-online.target nss-lookup.target mihomo.service
-Wants=network-online.target
-
-[Service]
-Type=forking
-WorkingDirectory=${CONFIG_DIR}
-ExecStartPre=/bin/sleep 10
-ExecStart=/bin/bash ${SCRIPT_PATH}
-Restart=always
-RestartSec=15
-
-[Install]
-WantedBy=multi-user.target
-EOF
-            systemctl daemon-reload
-            systemctl enable yindun-sub >/dev/null 2>&1
-            echo -e "${GREEN}[SUCCESS] 开机自启服务配置成功（已启用网络等待与HTTP2隧道优化）！${NC}"
-        fi
-    else
-        # 确保服务处于 enable 状态
-        if ! systemctl is-enabled --quiet yindun-sub 2>/dev/null; then
-            systemctl enable yindun-sub >/dev/null 2>&1
-        fi
+# 自动将开机自启任务写入 crontab（全自动，无需任何额外操作）
+check_and_setup_cron_autostart() {
+    local cron_cmd="@reboot sleep 15 && /bin/bash ${SCRIPT_PATH} >${CONFIG_DIR}/cron_boot.log 2>&1"
+    
+    # 检查当前 crontab 中是否已经存在该任务
+    if ! crontab -l 2>/dev/null | grep -q "${SCRIPT_PATH}"; then
+        echo -e "${CYAN}[INFO] 正在全自动为你写入 Cron 开机自启任务...${NC}"
+        (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
+        echo -e "${GREEN}[SUCCESS]  Cron 开机自启任务已成功写入！${NC}"
     fi
 }
 
@@ -675,8 +643,16 @@ start_daemon() {
     [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
     stop_daemon
 
-    # 自动管理/检测开机自启服务
-    check_and_setup_autostart
+    # 彻底清理掉之前可能残留的 systemd 服务（避免干扰）
+    if systemctl is-active --quiet yindun-sub 2>/dev/null || [ -f /etc/systemd/system/yindun-sub.service ]; then
+        systemctl stop yindun-sub >/dev/null 2>&1
+        systemctl disable yindun-sub >/dev/null 2>&1
+        rm -f /etc/systemd/system/yindun-sub.service
+        systemctl daemon-reload >/dev/null 2>&1
+    fi
+
+    # 1. 自动注入 Cron 开机自启
+    check_and_setup_cron_autostart
 
     local web_port=""
     if [ -f "$PORT_RECORD_FILE" ]; then
