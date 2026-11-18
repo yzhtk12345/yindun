@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整集成各协议生成与开机自启自动注册）
+# Description: 本地订阅分发守护进程（完整集成各协议生成与开机自启自动注册 - HTTP2 优化版）
 # ==============================================================================
 
 RED="\033[31m"
@@ -128,8 +128,8 @@ manage_argo_tunnel() {
 
     echo -e "${CYAN}[INFO] 正在启动 Argo 临时隧道并等待获取有效域名 (绑定本地端口: ${argo_port})...${NC}"
     
-    # 2. 使用 https 协议并通过 --no-tls-verify 信任本地 Mihomo 自签证书
-    nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
+    # 2. 强制指定 --protocol http2 规避 7844 端口 QUIC 阻断，确保开机连通率[cite: 7]
+    nohup "$CLOUDFLARED_BIN" tunnel --url "https://127.0.0.1:${argo_port}" --no-tls-verify --no-autoupdate --protocol http2 > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
     # 3. 严格等待循环：确保抓取到有效域名才继续，最多等待 30 秒（15次 * 2秒）
@@ -141,7 +141,7 @@ manage_argo_tunnel() {
             argo_domain=$(grep -oP 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$ARGO_LOG_FILE" | head -n 1 | sed 's|https://||')
             if [ -n "$argo_domain" ]; then
                 echo "$argo_domain" > "$ARGO_DOMAIN_FILE"
-                echo -e "${GREEN}[SUCCESS] Argo 隧道临时域名获取成功: ${argo_domain}${NC}"
+                echo -e "${GREEN}[SUCCESS] Argo 临时域名获取成功: ${argo_domain}${NC}"
                 return 0
             fi
         fi
@@ -630,9 +630,8 @@ http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler).serve_forever()
 EOF
 }
 
-# 自动注册并检测 systemd 开机自启服务的函数
+# 自动注册并检测 systemd 开机自启服务的函数（已加入网络就绪与 10 秒延迟等待优化）
 check_and_setup_autostart() {
-    # 仅在交互终端运行且还没有服务时询问，或者非交互下自动处理
     if [ ! -f "$SERVICE_FILE" ]; then
         local create_service="y"
         if [ -t 0 ]; then
@@ -642,24 +641,27 @@ check_and_setup_autostart() {
         fi
 
         if [[ "$create_service" == "y" || "$create_service" == "Y" ]]; then
-            echo -e "${CYAN}[INFO] 正在自动写入并注册 systemd 开机自启服务...${NC}"
+            echo -e "${CYAN}[INFO] 正在自动写入并注册优化的 systemd 开机自启服务...${NC}"
             cat << EOF > "$SERVICE_FILE"
 [Unit]
 Description=YinDun Subscription Daemon
-After=network.target mihomo.service
+After=network-online.target nss-lookup.target mihomo.service
+Wants=network-online.target
 
 [Service]
 Type=forking
 WorkingDirectory=${CONFIG_DIR}
+ExecStartPre=/bin/sleep 10
 ExecStart=/bin/bash ${SCRIPT_PATH}
-Restart=on-failure
+Restart=always
+RestartSec=15
 
 [Install]
 WantedBy=multi-user.target
 EOF
             systemctl daemon-reload
             systemctl enable yindun-sub >/dev/null 2>&1
-            echo -e "${GREEN}[SUCCESS] 开机自启服务配置成功！以后重启 VPS 将自动运行。${NC}"
+            echo -e "${GREEN}[SUCCESS] 开机自启服务配置成功（已启用网络等待与HTTP2隧道优化）！${NC}"
         fi
     else
         # 确保服务处于 enable 状态
