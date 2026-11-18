@@ -17,12 +17,12 @@ NODES_DB="${CONFIG_DIR}/all_nodes.txt"
 mkdir -p "${CONFIG_DIR}"
 
 check_and_install_dependencies() {
-    if ! command -v ss &>/dev/null || ! command -v openssl &>/dev/null; then
+    if ! command -v ss &>/dev/null || ! command -v openssl &>/dev/null || ! command -v curl &>/dev/null; then
         echo -e "${YELLOW}[INFO] 检测到系统缺少基础网络或加密工具，正在自动安装...${NC}"
         if command -v apt-get &>/dev/null; then
-            apt-get update -y && apt-get install -y iproute2 openssl curl &>/dev/null
+            apt-get update -y && apt-get install -y iproute2 openssl curl netcat-traditional &>/dev/null || apt-get install -y iproute2 openssl curl netcat &>/dev/null || true
         elif command -v yum &>/dev/null; then
-            yum install -y iproute openssl curl &>/dev/null
+            yum install -y iproute openssl curl nc &>/dev/null || true
         fi
     fi
 }
@@ -260,38 +260,41 @@ trigger_sub_update() {
 
 install_all_protocols() {
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${CYAN}        开始执行一键全部协议安装流程          ${NC}"
+    echo -e "${CYAN}        开始执行一键全部协议安装流程 (9大协议)        ${NC}"
     echo -e "${CYAN}========================================================${NC}"
     
     cleanup_all_yindun_firewall
     > "$NODES_DB"
     > "$CONFIG_FILE"
 
-    echo -e "${CYAN}[1/8] 正在安装 VLESS-REALITY...${NC}"
+    echo -e "${CYAN}[1/9] 正在安装 VLESS-REALITY...${NC}"
     add_vless_reality_server_config "batch"
     
-    echo -e "${CYAN}[2/8] 正在安装 Hysteria 2...${NC}"
+    echo -e "${CYAN}[2/9] 正在安装 Hysteria 2...${NC}"
     add_hysteria2_server_config "batch"
     
-    echo -e "${CYAN}[3/8] 正在安装 TUIC v5...${NC}"
+    echo -e "${CYAN}[3/9] 正在安装 TUIC v5...${NC}"
     add_tuic_server_config "batch"
     
-    echo -e "${CYAN}[4/8] 正在安装 Mieru (TCP & UDP)...${NC}"
+    echo -e "${CYAN}[4/9] 正在安装 Mieru (TCP & UDP)...${NC}"
     add_mieru_server_config "batch"
     
-    echo -e "${CYAN}[5/8] 正在安装 Snell v6...${NC}"
+    echo -e "${CYAN}[5/9] 正在安装 Snell v6...${NC}"
     add_snell_server_config "batch"
     
-    echo -e "${CYAN}[6/8] 正在安装 ShadowQUIC...${NC}"
+    echo -e "${CYAN}[6/9] 正在安装 ShadowQUIC...${NC}"
     add_shadowquic_server_config "batch"
     
-    echo -e "${CYAN}[7/8] 正在安装 AnyTLS 四大模式...${NC}"
+    echo -e "${CYAN}[7/9] 正在安装 AnyTLS 四大模式...${NC}"
     add_anytls_all_modes_server_config "batch"
     
-    echo -e "${CYAN}[8/8] 正在安装 XHTTP 4大变体...${NC}"
+    echo -e "${CYAN}[8/9] 正在安装 XHTTP 4大变体...${NC}"
     add_xhttp_all_modes_server_config "batch"
 
-    echo -e "${GREEN}[SUCCESS] 所有协议一键全部安装配置完成！${NC}"
+    echo -e "${CYAN}[9/9] 正在安装 Argo VLESS-WS-TLS...${NC}"
+    add_argo_vless_wstls_server_config "batch"
+
+    echo -e "${GREEN}[SUCCESS] 所有 9 大协议一键全部安装配置完成！${NC}"
     trigger_sub_update
 }
 
@@ -715,7 +718,7 @@ PY_EOF
 }
 
 # ==============================================================================
-# 8. XHTTP 4大变体独立安装菜单 (原第9项改为第8项，去除了 H3)
+# 8. XHTTP 4大变体独立安装菜单
 # ==============================================================================
 add_xhttp_all_modes_server_config() {
     local mode_arg="${1:-interactive}"
@@ -808,6 +811,66 @@ PY_EOF
 }
 
 # ==============================================================================
+# 9. Argo VLESS-WS-TLS 独立安装菜单
+# ==============================================================================
+add_argo_vless_wstls_server_config() {
+    local mode_arg="${1:-interactive}"
+    check_and_install_python
+    check_and_install_dependencies
+    cleanup_firewall_by_type "argo-wstls"
+    local host_name=$(hostname)
+
+    local port_mode="auto" manual_port=""
+    if [[ "$mode_arg" == "interactive" ]]; then
+        read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+        [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入指定端口 [20000-60000]: " manual_port
+    fi
+
+    local port=$(get_available_port "$port_mode" "$manual_port")
+    [[ -z "$port" ]] && return 1
+
+    local uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
+    local cert_dir="${CONFIG_DIR}/cert"
+    mkdir -p "$cert_dir"
+    local cert_file="${cert_dir}/argo.crt" key_file="${cert_dir}/argo.key"
+    local sni_domain="cloudflare.com"
+    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$key_file" -out "$cert_file" -days 3650 -subj "/CN=${sni_domain}" 2>/dev/null
+    local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "YOUR_SERVER_IP")
+
+    manage_firewall_port "add" "$port" "tcp" "YinDun-Argo-${port}"
+    local node_name="argo-vless-wstls-in-${host_name}"
+    local db_record="TYPE=argo-wstls|NAME=${node_name}|PORT=${port}|UUID=${uuid}|CRT=${cert_file}|KEY=${key_file}|IP=${server_ip}"
+
+    python3 - "$CONFIG_FILE" "$NODES_DB" "$node_name" "$port" "$db_record" "$uuid" "$cert_file" "$key_file" << 'PY_EOF'
+import sys, os, yaml
+config_path, nodes_db, node_name, port_str, db_record, uuid, cert_file, key_file = sys.argv[1:9]
+port = int(port_str)
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not l.startswith("TYPE=argo-wstls|")] if os.path.exists(nodes_db) else []
+existing.append(db_record)
+with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
+listeners = []
+if os.path.exists(config_path):
+    try:
+        loaded = yaml.safe_load(open(config_path, encoding="utf-8"))
+        if loaded and isinstance(loaded, dict) and "listeners" in loaded:
+            listeners = [l for l in loaded["listeners"] if l.get("name") != node_name]
+    except: pass
+listeners.append({
+    "name": node_name, "type": "vless", "port": port, "listen": "127.0.0.1",
+    "users": [{"username": "1", "uuid": uuid, "flow": ""}],
+    "ws-path": "/yindun-argo-wstls",
+    "certificate": cert_file, "private-key": key_file
+})
+blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
+os.makedirs(os.path.dirname(config_path), exist_ok=True)
+with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
+PY_EOF
+    systemctl restart mihomo
+    echo -e "${GREEN}[SUCCESS] Argo VLESS-WS-TLS 服务端入站配置完成！${NC}"
+    [[ "$mode_arg" == "interactive" ]] && trigger_sub_update
+}
+
+# ==============================================================================
 # 主控制菜单
 # ==============================================================================
 show_menu() {
@@ -824,9 +887,10 @@ show_menu() {
     echo "7. 单独添加/重置 ShadowQUIC 服务端节点"
     echo "8. 单独添加/重置 AnyTLS 四大模式服务端节点"
     echo "9. 单独添加/重置 XHTTP 4大变体服务端节点"
+    echo "10. 单独添加/重置 Argo VLESS-WS-TLS 服务端节点"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
-    read -p "请选择操作 [0-9]: " choice
+    read -p "请选择操作 [0-10]: " choice
 
     case "$choice" in
         1) install_all_protocols ;;
@@ -838,6 +902,7 @@ show_menu() {
         7) add_shadowquic_server_config "interactive" ;;
         8) add_anytls_all_modes_server_config "interactive" ;;
         9) add_xhttp_all_modes_server_config "interactive" ;;
+        10) add_argo_vless_wstls_server_config "interactive" ;;
         0) exit 0 ;;
         *) echo -e "${RED}[ERROR] 无效的选择！${NC}" ;;
     esac
