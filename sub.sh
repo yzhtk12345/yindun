@@ -116,7 +116,6 @@ all_links = []
 mi_node_names = []
 box_node_names = []
 
-# 定义你指定的 4 个优选加速目标 (用于为 Argo 443 隧道衍生出 4 个高质量优选加速节点)
 PREFERRED_CF_IPS = [
     {"tag": "优选-090227", "addr": "cf.090227.xyz"},
     {"tag": "优选-182682", "addr": "cloudflare.182682.xyz"},
@@ -132,7 +131,6 @@ if os.path.exists(nodes_db):
             parts = {k: v for item in line.split("|") if "=" in item for k, v in [item.split("=", 1)]}
             node_type = parts.get("TYPE")
 
-            # A. VLESS-REALITY
             if node_type == "vless-reality":
                 name = parts.get("NAME", "node").replace("-in-", "-out-")
                 ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
@@ -156,7 +154,6 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "vless", "tag": name, "server": ip, "server_port": int(port_val), "uuid": uuid, "flow": "xtls-rprx-vision", "tls": {"enabled": True, "server_name": domain, "utls": {"enabled": True, "fingerprint": "chrome"}, "reality": {"enabled": True, "public_key": pub, "short_id": shortid}}})
                 all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&flow=xtls-rprx-vision&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}#{urllib.parse.quote(name)}")
 
-            # B. Hysteria 2
             elif node_type == "hysteria2":
                 name = parts.get("NAME", "hy2-node").replace("-in-", "-out-")
                 ip, port_val, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "gateway.icloud.com")
@@ -175,7 +172,6 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "hysteria2", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}})
                 all_links.append(f"hysteria2://{password}@{ip}:{port_val}?sni={sni}&pinSHA256={fingerprint}#{urllib.parse.quote(name)}")
 
-            # C. TUIC v5
             elif node_type == "tuic":
                 name = parts.get("NAME", "tuic-node").replace("-in-", "-out-")
                 ip, port_val, tuic_uuid, password, fingerprint, sni = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASSWORD"), parts.get("FINGERPRINT"), parts.get("SNI", "www.apple.com")
@@ -196,7 +192,6 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "tuic", "tag": name, "server": ip, "server_port": int(port_val), "uuid": tuic_uuid, "password": password, "tls": {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["h3"]}, "congestion_control": "bbr"})
                 all_links.append(f"tuic://{tuic_uuid}:{password}@{ip}:{port_val}?sni={sni}&congestion_control=bbr&alpn=h3&pinSHA256={fingerprint}&allow_insecure=1#{urllib.parse.quote(name)}")
 
-            # D. Mieru
             elif node_type in ["mieru-tcp", "mieru-udp"]:
                 name = parts.get("NAME", "mieru-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
@@ -211,7 +206,6 @@ if os.path.exists(nodes_db):
     transport: {transport_type}""")
                 all_links.append(f"mierus://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{ip}:{port_val}?profile={urllib.parse.quote(name)}&port={port_val}&protocol={transport_type}#{urllib.parse.quote(name)}")
 
-            # E. Snell v6
             elif node_type == "snell":
                 name = parts.get("NAME", "snell-node").replace("-in-", "-out-")
                 ip, port_val, psk = parts.get("IP"), parts.get("PORT"), parts.get("PSK")
@@ -230,7 +224,6 @@ if os.path.exists(nodes_db):
                 box_outbounds.append({"type": "snell", "tag": name, "server": ip, "server_port": int(port_val), "version": v_version, "psk": psk, "mode": v_mode})
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
-            # F. ShadowQUIC
             elif node_type == "shadowquic":
                 name = parts.get("NAME", "shadowquic-node").replace("-in-", "-out-")
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
@@ -251,7 +244,6 @@ if os.path.exists(nodes_db):
     congestion-controller: bbr""")
                 all_links.append(f"sq://{username}:{password}@{ip}:{port_val}?sni={sni_domain}&udp_mode=datagram&congestion=bbr#{urllib.parse.quote(name)}")
 
-            # G. AnyTLS
             elif node_type == "anytls":
                 name = parts.get("NAME", "anytls-node").replace("-in-", "-out-")
                 mode = parts.get("MODE", "standard")
@@ -304,7 +296,6 @@ if os.path.exists(nodes_db):
       username: "{username}"
       password: "{password}" """)
 
-            # H. XHTTP
             elif node_type == "xhttp-reality":
                 name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
                 ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
@@ -397,7 +388,6 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            # I. Argo 443 隧道矩阵生成 (保留 443 端口 WS-TLS 主节点 + 4 个自定义优选加速节点 = 合计 5 个节点)
             elif node_type == "argo-wstls":
                 base_name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
                 domain = parts.get("DOMAIN")
@@ -407,7 +397,6 @@ if os.path.exists(nodes_db):
                 is_tls = True
                 
                 if domain and uuid:
-                    # 1. 默认主节点 (1个)
                     main_name = f"{base_name}-(443端口主节点)"
                     mi_node_names.append(main_name)
                     box_node_names.append(main_name)
@@ -430,7 +419,6 @@ if os.path.exists(nodes_db):
                     })
                     all_links.append(f"vless://{uuid}@{domain}:{port}?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(main_name)}")
 
-                    # 2. 衍生出 4 个自定义优选节点 (4个)
                     for pref in PREFERRED_CF_IPS:
                         pref_tag = pref["tag"]
                         pref_addr = pref["addr"]
@@ -622,4 +610,3 @@ start_daemon() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     start_daemon
 fi
-```[cite: 7]
