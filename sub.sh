@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（已剔除不稳定的 xhttp-h3，保留其余所有高性能协议）
+# Description: 本地订阅分发守护进程（完整支持 Reality、Hy2、TUIC、AnyTLS、XHTTP 及 Argo 临时隧道节点）
 # ==============================================================================
 
 RED="\033[31m"
@@ -226,15 +226,7 @@ if os.path.exists(nodes_db):
     version: {v_version}
     udp: true
     mode: {v_mode}""")
-                box_outbounds.append({
-                    "type": "snell",
-                    "tag": name,
-                    "server": ip,
-                    "server_port": int(port_val),
-                    "version": v_version,
-                    "psk": psk,
-                    "mode": v_mode
-                })
+                box_outbounds.append({"type": "snell", "tag": name, "server": ip, "server_port": int(port_val), "version": v_version, "psk": psk, "mode": v_mode})
                 all_links.append(f"snell://{psk}@{ip}:{port_val}?version={v_version}&mode={v_mode}#{urllib.parse.quote(name)}")
 
             # F. ShadowQUIC
@@ -243,7 +235,6 @@ if os.path.exists(nodes_db):
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
                 jls_addr = parts.get("JLS", "download.nvidia.com:443")
                 sni_domain = jls_addr.split(":")[0] if ":" in jls_addr else jls_addr
-                
                 mi_node_names.append(name)
                 mi_proxies.append(f"""  - name: "{name}"
     type: shadowquic
@@ -266,7 +257,6 @@ if os.path.exists(nodes_db):
                 ip, port_val, username, password = parts.get("IP"), parts.get("PORT"), parts.get("USER"), parts.get("PASS")
                 dest_raw = parts.get("DEST", "")
                 domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
-
                 mi_node_names.append(name)
                 if mode == "standard":
                     mi_proxies.append(f"""  - name: "{name}"
@@ -279,7 +269,6 @@ if os.path.exists(nodes_db):
                     box_node_names.append(name)
                     box_outbounds.append({"type": "anytls", "tag": name, "server": ip, "server_port": int(port_val), "password": password, "tls": {"enabled": True, "insecure": True}})
                     all_links.append(f"anytls://{password}@{ip}:{port_val}?insecure=1&security=tls&type=tcp&headerType=none#{urllib.parse.quote(name)}")
-
                 elif mode == "shadowtls":
                     mi_proxies.append(f"""  - name: "{name}"
     type: anytls
@@ -291,7 +280,6 @@ if os.path.exists(nodes_db):
     shadow-tls-opts:
       version: 3
       password: "{password}" """)
-
                 elif mode == "restls":
                     mi_proxies.append(f"""  - name: "{name}"
     type: anytls
@@ -303,7 +291,6 @@ if os.path.exists(nodes_db):
     restls-opts:
       password: "{password}"
       version-hint: "tls13" """)
-
                 elif mode == "jls":
                     mi_proxies.append(f"""  - name: "{name}"
     type: anytls
@@ -316,101 +303,37 @@ if os.path.exists(nodes_db):
       username: "{username}"
       password: "{password}" """)
 
-            # H. XHTTP 四大稳定变体
-            elif node_type == "xhttp-reality":
-                name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
-                ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
-                mi_node_names.append(name)
-                mi_proxies.append(f"""  - name: "{name}"
+            # H. Argo 临时隧道双节点支持 (WS & WS-TLS)
+            elif node_type in ["argo-ws", "argo-wstls"]:
+                name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
+                domain = parts.get("DOMAIN")
+                uuid = parts.get("UUID")
+                path = parts.get("PATH", "/yindun-argo")
+                if domain and uuid:
+                    mi_node_names.append(name)
+                    box_node_names.append(name)
+                    mi_proxies.append(f"""  - name: "{name}"
     type: vless
-    server: {ip}
-    port: {port_val}
+    server: {domain}
+    port: 443
     uuid: {uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    client-fingerprint: chrome
-    servername: {domain}
-    xhttp-opts:
-      path: "/yindun-xr"
-      host: "{domain}"
-      mode: "stream-up"
-    reality-opts:
-      public-key: {pub}
-      short-id: {shortid}
-      support-x25519mlkem768: false""")
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=reality&sni={domain}&fp=chrome&pbk={pub}&sid={shortid}&type=xhttp&host={domain}&path=%2Fyindun-xr&mode=stream-up#{urllib.parse.quote(name)}")
-
-            elif node_type == "xhttp-shadowtls":
-                name = parts.get("NAME", "xhttp-stls-node").replace("-in-", "-out-")
-                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
-                dest_raw = parts.get("DEST", "download.nvidia.com:443")
-                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
-                mi_node_names.append(name)
-                mi_proxies.append(f"""  - name: "{name}"
-    type: vless
-    server: {ip}
-    port: {port_val}
-    uuid: {uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    client-fingerprint: chrome
-    servername: {domain}
-    xhttp-opts:
-      path: "/yindun-xst"
-      host: "{domain}"
-      mode: "stream-up"
-    shadow-tls-opts:
-      version: 3
-      password: "{password}"
-      servername: "{domain}" """)
-
-            elif node_type == "xhttp-restls":
-                name = parts.get("NAME", "xhttp-rtls-node").replace("-in-", "-out-")
-                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
-                dest_raw = parts.get("DEST", "cdn.akamai.steamstatic.com:443")
-                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
-                mi_node_names.append(name)
-                mi_proxies.append(f"""  - name: "{name}"
-    type: vless
-    server: {ip}
-    port: {port_val}
-    uuid: {uuid}
-    network: xhttp
+    network: ws
     tls: true
     udp: true
     servername: {domain}
-    xhttp-opts:
-      path: "/yindun-xrt"
-      host: "{domain}"
-      mode: "stream-up"
-    restls-opts:
-      password: "{password}"
-      version-hint: "tls13" """)
-
-            elif node_type == "xhttp-jls":
-                name = parts.get("NAME", "xhttp-jls-node").replace("-in-", "-out-")
-                ip, port_val, uuid, password = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PASS")
-                dest_raw = parts.get("DEST", "update.code.visualstudio.com:443")
-                domain = dest_raw.split(":")[0] if ":" in dest_raw else dest_raw
-                mi_node_names.append(name)
-                mi_proxies.append(f"""  - name: "{name}"
-    type: vless
-    server: {ip}
-    port: {port_val}
-    uuid: {uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    servername: {domain}
-    xhttp-opts:
-      path: "/yindun-xj"
-      host: "{domain}"
-      mode: "stream-up"
-    jls-opts:
-      username: "1"
-      password: "{password}" """)
+    ws-opts:
+      path: "{path}" """)
+                    box_outbounds.append({
+                        "type": "vless",
+                        "tag": name,
+                        "server": domain,
+                        "server_port": 443,
+                        "uuid": uuid,
+                        "network": "ws",
+                        "tls": {"enabled": True, "server_name": domain},
+                        "transport": {"type": "ws", "path": path}
+                    })
+                    all_links.append(f"vless://{uuid}@{domain}:443?encryption=none&security=tls&type=ws&host={domain}&path={urllib.parse.quote(path)}&sni={domain}#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
@@ -536,7 +459,7 @@ EOF
 }
 
 start_daemon() {
-    [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
+    [ ! -f "$NODES_DB" ] && touch "$NODES_DB"
     stop_daemon
     [ ! -f "$TOKEN_FILE" ] && openssl rand -hex 32 > "$TOKEN_FILE"
 
@@ -547,7 +470,7 @@ start_daemon() {
     prepare_subscription_generator
     python3 "$SUBSCRIPTION_GENERATOR"
     prepare_python_server
-    manage_firewall_port "add" "$web_port" "tcp" "YinDun-Sub-${web_port}"
+    manage_firewall_port "add" "$web_port" "YinDun-Sub-${web_port}"
     local server_ip
     server_ip=$(get_public_ip)
 
