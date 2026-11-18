@@ -102,13 +102,11 @@ detect_firewall() {
     fi
 }
 
-# 全局防火墙全面检查与清理（删除所有带 YinDun 备注或账本记录的端口）
 cleanup_all_yindun_firewall() {
     local fw_type
     fw_type=$(detect_firewall)
     echo -e "${CYAN}[INFO] 正在检测系统防火墙 (${fw_type}) 并清理本脚本历史开放端口...${NC}"
 
-    # 1. 根据账本库清理
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
@@ -133,7 +131,6 @@ cleanup_all_yindun_firewall() {
         done < "$NODES_DB"
     fi
 
-    # 2. 针对 ufw 带有 YinDun 备注的规则进行二次深度检索与删除
     if [[ "$fw_type" == "ufw" ]]; then
         ufw status numbered 2>/dev/null | grep "YinDun" | awk -F'[][]' '{print $2}' | sort -nr | while read -r rule_num; do
             [[ -n "$rule_num" ]] && ufw --force delete "$rule_num" >/dev/null 2>&1
@@ -144,7 +141,6 @@ cleanup_all_yindun_firewall() {
     fi
 }
 
-# 单独针对某种协议类型进行防火墙及配置清理
 cleanup_firewall_by_type() {
     local target_type="$1"
     local fw_type
@@ -262,42 +258,37 @@ trigger_sub_update() {
     fi
 }
 
-# ==============================================================================
-# 0. 一键全部协议安装 (菜单选项 1)
-# ==============================================================================
 install_all_protocols() {
     echo -e "\n${CYAN}========================================================${NC}"
     echo -e "${CYAN}        开始执行一键全部协议安装流程          ${NC}"
     echo -e "${CYAN}========================================================${NC}"
     
-    # 步骤 1：检查并清理已有防火墙端口
     cleanup_all_yindun_firewall
     > "$NODES_DB"
     > "$CONFIG_FILE"
 
-    # 依次独立安装各项协议（复用单独安装函数，传入自动随机模式）
-    echo -e "${CYAN}[1/9] 正在安装 VLESS-REALITY...${NC}"
+    echo -e "${CYAN}[1/8] 正在安装 VLESS-REALITY...${NC}"
     add_vless_reality_server_config "batch"
     
-    echo -e "${CYAN}[2/9] 正在安装 Hysteria 2...${NC}"
+    echo -e "${CYAN}[2/8] 正在安装 Hysteria 2...${NC}"
     add_hysteria2_server_config "batch"
     
-    echo -e "${CYAN}[3/9] 正在安装 TUIC v5...${NC}"
+    echo -e "${CYAN}[3/8] 正在安装 TUIC v5...${NC}"
     add_tuic_server_config "batch"
     
-    echo -e "${CYAN}[4/9] 正在安装 Mieru (TCP & UDP)...${NC}"
+    echo -e "${CYAN}[4/8] 正在安装 Mieru (TCP & UDP)...${NC}"
     add_mieru_server_config "batch"
     
-    echo -e "${CYAN}[5/9] 正在安装 Snell v6...${NC}"
+    echo -e "${CYAN}[5/8] 正在安装 Snell v6...${NC}"
     add_snell_server_config "batch"
     
-    echo -e "${CYAN}[6/9] 正在安装 ShadowQUIC...${NC}"
+    echo -e "${CYAN}[6/8] 正在安装 ShadowQUIC...${NC}"
     add_shadowquic_server_config "batch"
     
-    echo -e "${CYAN}[7/9] 正在安装 AnyTLS 四大模式...${NC}"
+    echo -e "${CYAN}[7/8] 正在安装 AnyTLS 四大模式...${NC}"
     add_anytls_all_modes_server_config "batch"
     
-    echo -e "${CYAN}[8/9] 正在安装 XHTTP 5大变体...${NC}"
+    echo -e "${CYAN}[8/8] 正在安装 XHTTP 4大变体...${NC}"
     add_xhttp_all_modes_server_config "batch"
 
     echo -e "${GREEN}[SUCCESS] 所有协议一键全部安装配置完成！${NC}"
@@ -724,7 +715,7 @@ PY_EOF
 }
 
 # ==============================================================================
-# 8. XHTTP 5大变体独立安装菜单
+# 8. XHTTP 4大变体独立安装菜单 (原第9项改为第8项，去除了 H3)
 # ==============================================================================
 add_xhttp_all_modes_server_config() {
     local mode_arg="${1:-interactive}"
@@ -734,7 +725,6 @@ add_xhttp_all_modes_server_config() {
     cleanup_firewall_by_type "xhttp-shadowtls"
     cleanup_firewall_by_type "xhttp-restls"
     cleanup_firewall_by_type "xhttp-jls"
-    cleanup_firewall_by_type "xhttp-h3"
     local host_name=$(hostname)
 
     local mihomo_bin="${CONFIG_DIR}/mihomo"
@@ -744,27 +734,17 @@ add_xhttp_all_modes_server_config() {
     local x_dom_stls=$(select_best_domain_from_list "download.nvidia.com" "download.nvidia.com" "swcdn.apple.com")
     local x_dom_rtls=$(select_best_domain_from_list "cdn.akamai.steamstatic.com" "cdn.akamai.steamstatic.com" "launcher.store.epicgames.com")
     local x_dom_jls=$(select_best_domain_from_list "update.code.visualstudio.com" "update.code.visualstudio.com" "registry.npmjs.org")
-    local x_dom_h3=$(select_best_domain_from_list "cloudflare.com" "cloudflare.com" "speed.cloudflare.com")
-
-    local cert_dir="${CONFIG_DIR}/cert"
-    mkdir -p "$cert_dir"
-    local h3_crt="${cert_dir}/xhttp_h3.crt"
-    local h3_key="${cert_dir}/xhttp_h3.key"
-    openssl req -x509 -nodes -newkey rsa:2048 -keyout "$h3_key" -out "$h3_crt" -days 3650 -subj "/CN=${x_dom_h3}" 2>/dev/null
-    local h3_fingerprint=$(openssl x509 -noout -fingerprint -sha256 -in "$h3_crt" | cut -d '=' -f 2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
     local server_ip=$(curl -s4 ip.sb 2>/dev/null | tr -d '\r\n' || echo "45.207.156.146")
 
     local p_xr=$(get_available_port "auto" "")
     local p_xst=$(get_available_port "auto" "")
     local p_xrt=$(get_available_port "auto" "")
     local p_xj=$(get_available_port "auto" "")
-    local p_xh3=$(get_available_port "auto" "")
 
     manage_firewall_port "add" "$p_xr" "tcp" "YinDun-XHTTP-Reality-${p_xr}"
     manage_firewall_port "add" "$p_xst" "tcp" "YinDun-XHTTP-ShadowTLS-${p_xst}"
     manage_firewall_port "add" "$p_xrt" "tcp" "YinDun-XHTTP-ResTLS-${p_xrt}"
     manage_firewall_port "add" "$p_xj" "tcp" "YinDun-XHTTP-JLS-${p_xj}"
-    manage_firewall_port "add" "$p_xh3" "udp" "YinDun-XHTTP-H3-${p_xh3}"
 
     local kp_xr=$("$mihomo_bin" generate reality-keypair 2>/dev/null)
     local priv_xr=$(echo "$kp_xr" | awk '/PrivateKey:/ {print $2}' | tr -d '\r\n')
@@ -775,7 +755,6 @@ add_xhttp_all_modes_server_config() {
     local uuid_stls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     local uuid_rtls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
     local uuid_jls=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
-    local uuid_h3=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
 
     local stls_pass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)
     local restls_pass=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | head -c 12)
@@ -785,20 +764,17 @@ add_xhttp_all_modes_server_config() {
     local name_xst="xhttp-shadowtls-in-${host_name}"
     local name_xrt="xhttp-restls-in-${host_name}"
     local name_xj="xhttp-jls-in-${host_name}"
-    local name_xh3="xhttp-h3-in-${host_name}"
 
     local r_xr="TYPE=xhttp-reality|NAME=${name_xr}|PORT=${p_xr}|UUID=${uuid_base}|PRIV=${priv_xr}|PUB=${pub_xr}|SHORTID=${sid_xr}|DOMAIN=${x_dom_reality}|IP=${server_ip}"
     local r_xst="TYPE=xhttp-shadowtls|NAME=${name_xst}|PORT=${p_xst}|UUID=${uuid_stls}|PASS=${stls_pass}|DEST=${x_dom_stls}:443|IP=${server_ip}"
     local r_xrt="TYPE=xhttp-restls|NAME=${name_xrt}|PORT=${p_xrt}|UUID=${uuid_rtls}|PASS=${restls_pass}|DEST=${x_dom_rtls}:443|IP=${server_ip}"
     local r_xj="TYPE=xhttp-jls|NAME=${name_xj}|PORT=${p_xj}|UUID=${uuid_jls}|PASS=${jls_pass}|DEST=${x_dom_jls}:443|SNI=${x_dom_jls}|IP=${server_ip}"
-    local r_xh3="TYPE=xhttp-h3|NAME=${name_xh3}|PORT=${p_xh3}|UUID=${uuid_h3}|DOMAIN=${x_dom_h3}|FINGERPRINT=${h3_fingerprint}|CRT=${h3_crt}|KEY=${h3_key}|IP=${server_ip}"
 
     python3 - "$CONFIG_FILE" "$NODES_DB" \
         "$name_xr" "$p_xr" "$uuid_base" "$x_dom_reality" "$priv_xr" "$pub_xr" "$sid_xr" "$r_xr" \
         "$name_xst" "$p_xst" "$uuid_stls" "$stls_pass" "$x_dom_stls" "$r_xst" \
         "$name_xrt" "$p_xrt" "$uuid_rtls" "$restls_pass" "$x_dom_rtls" "$r_xrt" \
-        "$name_xj" "$p_xj" "$uuid_jls" "$jls_pass" "$x_dom_jls" "$r_xj" \
-        "$name_xh3" "$p_xh3" "$uuid_h3" "$x_dom_h3" "$h3_crt" "$h3_key" "$r_xh3" << 'PY_EOF'
+        "$name_xj" "$p_xj" "$uuid_jls" "$jls_pass" "$x_dom_jls" "$r_xj" << 'PY_EOF'
 import sys, os, yaml
 args = sys.argv[1:]
 config_path, nodes_db = args[0], args[1]
@@ -806,10 +782,9 @@ n_xr, p_xr, u_xr, d_xr, priv, pub, sid, rec_xr = args[2:10]
 n_xst, p_xst, u_xst, pw_stls, d_stls, rec_xst = args[10:16]
 n_xrt, p_xrt, u_xrt, pw_rtls, d_rtls, rec_xrt = args[16:22]
 n_xj, p_xj, u_xj, pw_jls, d_jls, rec_xj = args[22:28]
-n_xh3, p_xh3, u_xh3, d_h3, h3_crt, h3_key, rec_xh3 = args[28:35]
-xhttp_names = {n_xr, n_xst, n_xrt, n_xj, n_xh3}
-new_records = [rec_xr, rec_xst, rec_xrt, rec_xj, rec_xh3]
-existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not any(t in l for t in ["TYPE=xhttp-reality", "TYPE=xhttp-shadowtls", "TYPE=xhttp-restls", "TYPE=xhttp-jls", "TYPE=xhttp-h3"])] if os.path.exists(nodes_db) else []
+xhttp_names = {n_xr, n_xst, n_xrt, n_xj}
+new_records = [rec_xr, rec_xst, rec_xrt, rec_xj]
+existing = [l.strip() for l in open(nodes_db, encoding="utf-8") if l.strip() and not any(t in l for t in ["TYPE=xhttp-reality", "TYPE=xhttp-shadowtls", "TYPE=xhttp-restls", "TYPE=xhttp-jls"])] if os.path.exists(nodes_db) else []
 existing.extend(new_records)
 with open(nodes_db, "w", encoding="utf-8") as f: f.write("\n".join(existing) + "\n")
 listeners = []
@@ -823,13 +798,12 @@ listeners.append({"name": n_xr, "type": "vless", "port": int(p_xr), "listen": "0
 listeners.append({"name": n_xst, "type": "vless", "port": int(p_xst), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xst, "flow": ""}], "xhttp-config": {"path": "/yindun-xst", "host": d_stls, "mode": "stream-up", "uplink-http-method": "POST"}, "shadow-tls": {"enable": True, "version": 3, "users": [{"name": "1", "password": pw_stls}], "handshake": {"dest": f"{d_stls}:443"}}})
 listeners.append({"name": n_xrt, "type": "vless", "port": int(p_xrt), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xrt, "flow": ""}], "xhttp-config": {"path": "/yindun-xrt", "host": d_rtls, "mode": "stream-up", "uplink-http-method": "POST"}, "res-tls": {"enable": True, "dest": f"{d_rtls}:443", "password": pw_rtls}})
 listeners.append({"name": n_xj, "type": "vless", "port": int(p_xj), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xj, "flow": ""}], "xhttp-config": {"path": "/yindun-xj", "host": d_jls, "mode": "stream-up", "uplink-http-method": "POST"}, "jls-config": {"enable": True, "users": [{"username": "1", "password": pw_jls}], "dest": f"{d_jls}:443", "sni": d_jls}})
-listeners.append({"name": n_xh3, "type": "vless", "port": int(p_xh3), "listen": "0.0.0.0", "users": [{"username": "1", "uuid": u_xh3, "flow": ""}], "network": "xhttp", "xhttp-config": {"path": "yindun-xh3", "host": d_h3, "mode": "auto"}, "alpn": ["h3"], "certificate": h3_crt, "private-key": h3_key})
 blocks = ["\n".join("  " + l for l in yaml.safe_dump([item], allow_unicode=True, sort_keys=False).strip().splitlines()) for item in listeners]
 os.makedirs(os.path.dirname(config_path), exist_ok=True)
 with open(config_path, "w", encoding="utf-8") as f: f.write("listeners:\n" + "\n\n".join(blocks) + "\n")
 PY_EOF
     systemctl restart mihomo
-    echo -e "${GREEN}[SUCCESS] XHTTP 5大变体服务端入站配置已全部写入并成功重启！${NC}"
+    echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
     [[ "$mode_arg" == "interactive" ]] && trigger_sub_update
 }
 
@@ -849,7 +823,7 @@ show_menu() {
     echo "6. 单独添加/重置 Snell v6 服务端节点"
     echo "7. 单独添加/重置 ShadowQUIC 服务端节点"
     echo "8. 单独添加/重置 AnyTLS 四大模式服务端节点"
-    echo "9. 单独添加/重置 XHTTP 5大变体服务端节点"
+    echo "9. 单独添加/重置 XHTTP 4大变体服务端节点"
     echo "0. 退出脚本"
     echo -e "${CYAN}========================================================${NC}"
     read -p "请选择操作 [0-9]: " choice
