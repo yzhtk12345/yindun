@@ -228,8 +228,10 @@ add_hysteria2_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "hysteria2"
-    read -p "请输入 UDP 端口: " manual_port
-    local port=$(get_available_port "manual" "$manual_port")
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
+    local port=$(get_available_port "$port_mode" "$manual_port")
     [[ -z "$port" ]] && return 1
 
     local hy2_password=$(openssl rand -hex 12 2>/dev/null | tr -d '\r\n')
@@ -275,8 +277,10 @@ add_tuic_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "tuic"
-    read -p "请输入 UDP 端口: " manual_port
-    local port=$(get_available_port "manual" "$manual_port")
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
+    local port=$(get_available_port "$port_mode" "$manual_port")
     [[ -z "$port" ]] && return 1
 
     local tuic_uuid=$(cat /proc/sys/kernel/random/uuid | tr -d '\r\n')
@@ -325,9 +329,15 @@ add_mieru_server_config() {
     check_and_install_dependencies
     cleanup_firewall_by_type "mieru-tcp"
     cleanup_firewall_by_type "mieru-udp"
-    read -p "TCP 端口: " manual_tcp && read -p "UDP 端口: " manual_udp
-    local tcp_port=$(get_available_port "manual" "$manual_tcp")
-    local udp_port=$(get_available_port "manual" "$manual_udp")
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_tcp="" manual_udp=""
+    if [[ "$port_mode_choice" == "2" ]]; then
+        port_mode="manual"
+        read -p "TCP 端口: " manual_tcp
+        read -p "UDP 端口: " manual_udp
+    fi
+    local tcp_port=$(get_available_port "$port_mode" "$manual_tcp")
+    local udp_port=$(get_available_port "$port_mode" "$manual_udp")
     [[ -z "$tcp_port" || -z "$udp_port" ]] && return 1
 
     local host_name=$(hostname)
@@ -370,8 +380,10 @@ add_snell_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "snell"
-    read -p "请输入端口: " manual_port
-    local port=$(get_available_port "manual" "$manual_port")
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入端口: " manual_port
+    local port=$(get_available_port "$port_mode" "$manual_port")
     [[ -z "$port" ]] && return 1
 
     local snell_psk=$(openssl rand -hex 16 2>/dev/null | tr -d '\r\n')
@@ -408,8 +420,10 @@ add_shadowquic_server_config() {
     check_and_install_python
     check_and_install_dependencies
     cleanup_firewall_by_type "shadowquic"
-    read -p "请输入 UDP 端口: " manual_port
-    local port=$(get_available_port "manual" "$manual_port")
+    read -p "请选择端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_mode_choice
+    local port_mode="auto" manual_port=""
+    [[ "$port_mode_choice" == "2" ]] && port_mode="manual" && read -p "请输入 UDP 端口: " manual_port
+    local port=$(get_available_port "$port_mode" "$manual_port")
     [[ -z "$port" ]] && return 1
 
     local sq_user="user_$(openssl rand -hex 3)"
@@ -612,7 +626,7 @@ PY_EOF
     echo -e "${GREEN}[SUCCESS] XHTTP 4大变体服务端入站配置已全部写入并成功重启！${NC}"
 }
 
-# 9. Argo 纯净 443 TLS 隧道（严格单层平铺结构）
+# 9. Argo 纯净 443 TLS 隧道（带平铺格式与安全容错键读取）
 launch_argo_tunnel() {
     local p_wstls="$1"
     local cf_bin="${CONFIG_DIR}/cloudflared"
@@ -703,18 +717,26 @@ listeners.append(new_listener)
 with open(config_path, "w", encoding="utf-8") as f:
     f.write("listeners:\n")
     for item in listeners:
-        f.write(f"  - name: {item['name']}\n")
-        f.write(f"    type: {item['type']}\n")
-        f.write(f"    port: {item['port']}\n")
-        f.write(f"    listen: {item['listen']}\n")
+        f.write(f"  - name: {item.get('name', 'unknown')}\n")
+        f.write(f"    type: {item.get('type', 'vless')}\n")
+        f.write(f"    port: {int(item.get('port', 443))}\n")
+        f.write(f"    listen: {item.get('listen', '127.0.0.1')}\n")
         f.write(f"    users:\n")
-        for u in item['users']:
-            f.write(f"      - username: '{u['username']}'\n")
-            f.write(f"        uuid: {u['uuid']}\n")
-            f.write(f"        flow: '{u['flow']}'\n")
-        f.write(f"    ws-path: \"{item['ws-path']}\"\n")
-        f.write(f"    certificate: {item['certificate']}\n")
-        f.write(f"    private-key: {item['private-key']}\n\n")
+        users = item.get('users', [{"username": "1", "uuid": uuid, "flow": ""}])
+        for u in users:
+            f.write(f"      - username: '{u.get('username', '1')}'\n")
+            f.write(f"        uuid: {u.get('uuid', uuid)}\n")
+            f.write(f"        flow: '{u.get('flow', '')}'\n")
+        
+        path = item.get('ws-path')
+        if not path and 'ws-config' in item and isinstance(item['ws-config'], dict):
+            path = item['ws-config'].get('path', '/yindun-argo-wstls')
+        if not path:
+            path = '/yindun-argo-wstls'
+            
+        f.write(f"    ws-path: \"{path}\"\n")
+        f.write(f"    certificate: {item.get('certificate', crt)}\n")
+        f.write(f"    private-key: {item.get('private-key', key)}\n\n")
 PY_EOF
 
     systemctl restart mihomo
