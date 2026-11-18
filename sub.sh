@@ -135,16 +135,16 @@ manage_argo_tunnel() {
 
     install_cloudflared
 
-    # 1. 强力清理：杀死所有残存的、错误的或者多余的 cloudflared 进程，确保系统中绝对只有 1 个干净的隧道
+    # 1. 强力清理旧进程和旧状态文件
     pkill -9 -f "cloudflared tunnel" 2>/dev/null
-    rm -f "$ARGO_PID_FILE"
+    rm -f "$ARGO_PID_FILE" "$ARGO_DOMAIN_FILE" "$ARGO_LOG_FILE"
 
-    echo -e "${CYAN}[INFO] 正在启动干净的 Argo 临时隧道 (绑定本地端口: ${argo_port})...${NC}"
+    echo -e "${CYAN}[INFO] 正在启动 Argo 临时隧道并等待获取有效域名 (绑定本地端口: ${argo_port})...${NC}"
     
-    # 2. 以标准正确的 http 协议后台拉起隧道，并严格重定向日志
     nohup "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${argo_port}" --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
+    # 2. 严格等待循环：确保抓取到有效域名才继续，最多等待 30 秒（15次 * 2秒）
     local count=0
     local argo_domain=""
     while [ $count -lt 15 ]; do
@@ -159,7 +159,9 @@ manage_argo_tunnel() {
         fi
         count=$((count + 1))
     done
-    echo -e "${YELLOW}[WARN] 获取 Argo 临时域名超时，请检查网络或防火墙出站限制${NC}"
+    
+    echo -e "${RED}[ERROR] 获取 Argo 临时域名超时！请检查服务器网络或出站限制。${NC}"
+    return 1
 }
 
 prepare_subscription_generator() {
@@ -473,14 +475,16 @@ if os.path.exists(nodes_db):
                     
                     is_ip6 = remote_host.startswith("[") or ":" in remote_host
                     addr_val = remote_host.strip("[]") if is_ip6 else remote_host
-                    uri_addr = f"[{addr_val}]" if is_ip6 else addr_val
+                    uri_addr = f"[{addr_val}]" if is_ip6 else remote_host
+                    # 修复：确保 IPv6 地址加上双引号，防止 YAML 解析崩溃
+                    mi_server_val = f'"{uri_addr}"' if is_ip6 else addr_val
 
                     sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
                     host_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
 
                     mi_proxies.append(f"""  - name: "{n_name}"
     type: vless
-    server: {addr_val}
+    server: {mi_server_val}
     port: 443
     uuid: {uuid}
     network: ws
@@ -686,7 +690,8 @@ start_daemon() {
         echo -e "${GREEN}[INFO] 已生成并记录新的 Token${NC}"
     fi
 
-    manage_argo_tunnel
+    # 严格保障：先百分之百获取并写入最新域名，再执行订阅生成
+    manage_argo_tunnel || { echo -e "${RED}[ERROR] Argo 隧道初始化失败，终止订阅启动${NC}"; return 1; }
 
     cleanup_old_sub_firewall_rules
     prepare_subscription_generator
