@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（语法修正终极版：修复结尾函数闭合错误）
+# Description: 本地订阅分发守护进程（终极完美版：通用订阅严格输出 [2606:4700::0]）
 # ==============================================================================
 
 RED="\033[31m"
@@ -429,6 +429,7 @@ if os.path.exists(nodes_db):
                         mi_node_names.append(node_label)
                         box_node_names.append(node_label)
                         
+                        # 核心修改：如果是 IPv6，强制使用 link_addr（即严格的 2606:4700::0）拼入通用订阅链接
                         link_server_addr = f"[{link_addr}]" if is_v6 else pref_addr
                         
                         mi_proxies.append(f"""  - name: "{node_label}"
