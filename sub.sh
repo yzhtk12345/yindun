@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整集成各协议生成与订阅链接动态生成）
+# Description: 本地订阅分发守护进程（完整集成各协议生成与开机自启自动注册）
 # ==============================================================================
 
 RED="\033[31m"
@@ -21,6 +21,8 @@ ARGO_DOMAIN_FILE="${CONFIG_DIR}/argo_domain.txt"
 ARGO_PID_FILE="${CONFIG_DIR}/argo.pid"
 ARGO_LOG_FILE="${CONFIG_DIR}/argo.log"
 CLOUDFLARED_BIN="${CONFIG_DIR}/cloudflared"
+SERVICE_FILE="/etc/systemd/system/yindun-sub.service"
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 
 mkdir -p "$CONFIG_DIR"
 
@@ -67,21 +69,6 @@ manage_firewall_port() {
 check_port_used() {
     local port="$1"
     command -v ss &>/dev/null && ss -tuln | grep -q ":${port} " && return 0 || nc -z 127.0.0.1 "$port" &>/dev/null && return 0 || return 1
-}
-
-get_web_port() {
-    local target_port=""
-    if [ -f "$PORT_RECORD_FILE" ]; then
-        target_port=$(cat "$PORT_RECORD_FILE")
-    fi
-    if [ -z "$target_port" ]; then
-        while true; do
-            target_port=$((RANDOM % 10001 + 10000))
-            ! check_port_used "$target_port" && break
-        done
-        echo "$target_port" > "$PORT_RECORD_FILE"
-    fi
-    echo "$target_port"
 }
 
 get_public_ip() {
@@ -478,8 +465,6 @@ if os.path.exists(nodes_db):
                     addr_val = remote_host.strip("[]") if is_ip6 else remote_host
                     uri_addr = f"[{addr_val}]" if is_ip6 else remote_host
                     
-                    # 关键修改：
-                    # 1. 针对 Mihomo (mi_proxies): 仅用双引号包裹纯 IPv6 地址，去掉中括号 []，变成 server: "2606:4700::0"
                     mi_server_val = f'"{addr_val}"' if is_ip6 else addr_val
 
                     sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
@@ -520,7 +505,6 @@ if os.path.exists(nodes_db):
                         }
                     })
 
-                    # 2. 针对普通链接 (all_links): 保持带中括号的 IPv6 地址，以便客户端能正确解析
                     all_links.append(f"vless://{uuid}@{uri_addr}:443?encryption=none&security=tls&sni={sni_val}&type=ws&host={host_val}&path=%2Fyindun-argo-wstls#{urllib.parse.quote(n_name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
@@ -646,9 +630,51 @@ http.server.HTTPServer(("0.0.0.0", port), MultiSubHandler).serve_forever()
 EOF
 }
 
+# 自动注册并检测 systemd 开机自启服务的函数
+check_and_setup_autostart() {
+    # 仅在交互终端运行且还没有服务时询问，或者非交互下自动处理
+    if [ ! -f "$SERVICE_FILE" ]; then
+        local create_service="y"
+        if [ -t 0 ]; then
+            echo -e "${YELLOW}[INFO] 检测到系统尚未配置该订阅服务的“开机自启”。${NC}"
+            read -p "是否需要一键为你配置系统开机自启？[Y/n] (默认回车直接配置): " create_service
+            [[ -z "$create_service" ]] && create_service="y"
+        fi
+
+        if [[ "$create_service" == "y" || "$create_service" == "Y" ]]; then
+            echo -e "${CYAN}[INFO] 正在自动写入并注册 systemd 开机自启服务...${NC}"
+            cat << EOF > "$SERVICE_FILE"
+[Unit]
+Description=YinDun Subscription Daemon
+After=network.target mihomo.service
+
+[Service]
+Type=forking
+WorkingDirectory=${CONFIG_DIR}
+ExecStart=/bin/bash ${SCRIPT_PATH}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            systemctl daemon-reload
+            systemctl enable yindun-sub >/dev/null 2>&1
+            echo -e "${GREEN}[SUCCESS] 开机自启服务配置成功！以后重启 VPS 将自动运行。${NC}"
+        fi
+    else
+        # 确保服务处于 enable 状态
+        if ! systemctl is-enabled --quiet yindun-sub 2>/dev/null; then
+            systemctl enable yindun-sub >/dev/null 2>&1
+        fi
+    fi
+}
+
 start_daemon() {
     [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
     stop_daemon
+
+    # 自动管理/检测开机自启服务
+    check_and_setup_autostart
 
     local web_port=""
     if [ -f "$PORT_RECORD_FILE" ]; then
@@ -656,8 +682,14 @@ start_daemon() {
         old_port=$(cat "$PORT_RECORD_FILE")
         if [[ -n "$old_port" ]]; then
             echo -e "${YELLOW}[INFO] 检测到已存在历史订阅端口: ${CYAN}${old_port}${NC}"
-            read -p "是否使用现有端口？[Y/n] (默认回车使用现有): " choice_port
-            [[ -z "$choice_port" ]] && choice_port="y"
+            if [ -t 0 ]; then
+                read -p "是否使用现有端口？[Y/n] (默认回车使用现有): " choice_port
+                [[ -z "$choice_port" ]] && choice_port="y"
+            else
+                choice_port="y"
+                echo -e "${CYAN}[INFO] 非交互环境（后台启动），自动选择使用现有端口${NC}"
+            fi
+
             if [[ "$choice_port" == "y" || "$choice_port" == "Y" ]]; then
                 web_port="$old_port"
             fi
@@ -680,8 +712,14 @@ start_daemon() {
         old_token=$(cat "$TOKEN_FILE")
         if [[ -n "$old_token" ]]; then
             echo -e "${YELLOW}[INFO] 检测到已存在历史 Token: ${CYAN}${old_token}${NC}"
-            read -p "是否使用现有 Token？[Y/n] (默认回车使用现有): " choice_token
-            [[ -z "$choice_token" ]] && choice_token="y"
+            if [ -t 0 ]; then
+                read -p "是否使用现有 Token？[Y/n] (默认回车使用现有): " choice_token
+                [[ -z "$choice_token" ]] && choice_token="y"
+            else
+                choice_token="y"
+                echo -e "${CYAN}[INFO] 非交互环境（后台启动），自动选择使用现有 Token${NC}"
+            fi
+
             if [[ "$choice_token" == "y" || "$choice_token" == "Y" ]]; then
                 SUB_TOKEN="$old_token"
             fi
