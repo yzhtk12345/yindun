@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（完整集成各协议生成与 xhttp-h3 证书指纹 pcs=）
+# Description: 本地订阅分发守护进程（已剔除不稳定的 xhttp-h3，保留其余所有高性能协议）
 # ==============================================================================
 
 RED="\033[31m"
@@ -316,7 +316,7 @@ if os.path.exists(nodes_db):
       username: "{username}"
       password: "{password}" """)
 
-            # H. XHTTP 五大变体
+            # H. XHTTP 四大稳定变体
             elif node_type == "xhttp-reality":
                 name = parts.get("NAME", "xhttp-reality-node").replace("-in-", "-out-")
                 ip, port_val, uuid, pub, shortid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("PUB"), parts.get("SHORTID"), parts.get("DOMAIN", "gateway.icloud.com")
@@ -411,32 +411,6 @@ if os.path.exists(nodes_db):
     jls-opts:
       username: "1"
       password: "{password}" """)
-
-            # 5. XHTTP-H3-UDP -> 完美对接 network: xhttp、mode: auto 以及携带 pcs= 指纹的明文链接
-            elif node_type == "xhttp-h3":
-                name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
-                ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "cloudflare.com")
-                fingerprint = parts.get("FINGERPRINT", "")
-                mi_node_names.append(name)
-                mi_proxies.append(f"""  - name: "{name}"
-    type: vless
-    server: {ip}
-    port: {port_val}
-    uuid: {uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    skip-cert-verify: true
-    fingerprint: {fingerprint}
-    client-fingerprint: chrome
-    servername: {domain}
-    alpn:
-      - h3
-    xhttp-opts:
-      path: "/yindun-xh3"
-      host: "{domain}"
-      mode: "auto" """)
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pcs={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
 
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
