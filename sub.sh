@@ -119,7 +119,6 @@ install_cloudflared() {
 }
 
 manage_argo_tunnel() {
-    # 查找账本中的 argo-wstls 端口
     local argo_port=""
     if [ -f "$NODES_DB" ]; then
         while IFS= read -r line; do
@@ -136,12 +135,11 @@ manage_argo_tunnel() {
 
     install_cloudflared
 
-    # 检查现有 argo 进程是否存活
     if [ -f "$ARGO_PID_FILE" ]; then
         local argo_pid
         argo_pid=$(cat "$ARGO_PID_FILE")
         if kill -0 "$argo_pid" 2>/dev/null && [ -s "$ARGO_DOMAIN_FILE" ]; then
-            return 0 # 隧道正常运行且域名存在，无需重复拉起
+            return 0
         fi
     fi
 
@@ -151,7 +149,6 @@ manage_argo_tunnel() {
     nohup "$CLOUDFLARED_BIN" tunnel --url "http://127.0.0.1:${argo_port}" --no-autoupdate > "$ARGO_LOG_FILE" 2>&1 &
     echo $! > "$ARGO_PID_FILE"
 
-    # 循环等待并解析临时 argo 域名
     local count=0
     local argo_domain=""
     while [ $count -lt 15 ]; do
@@ -163,7 +160,7 @@ manage_argo_tunnel() {
                 echo -e "${GREEN}[SUCCESS] Argo 隧道临时域名获取成功: ${argo_domain}${NC}"
                 return 0
             fi
-        }
+        fi
         count=$((count + 1))
     done
     echo -e "${YELLOW}[WARN] 获取 Argo 临时域名超时，将尝试沿用旧域名或稍后重试${NC}"
@@ -464,7 +461,6 @@ if os.path.exists(nodes_db):
                 base_name = parts.get("NAME", "argo-node").replace("-in-", "-out-")
                 uuid = parts.get("UUID")
                 
-                # 定义 6 个优选节点映射: (后缀标签, 远程连接Host/SNI)
                 argo_variants = [
                     ("argo-temp", argo_temp_domain if argo_temp_domain else "trycloudflare.com"),
                     ("argo-cf090227", "cf.090227.xyz"),
@@ -478,7 +474,6 @@ if os.path.exists(nodes_db):
                     n_name = f"{base_name}-{suffix}"
                     mi_node_names.append(n_name)
                     
-                    # 判断是否为 IPV6 格式
                     is_ip6 = remote_host.startswith("[") or ":" in remote_host
                     addr_val = remote_host.strip("[]") if is_ip6 else remote_host
                     sni_val = argo_temp_domain if argo_temp_domain else "trycloudflare.com"
@@ -627,7 +622,6 @@ start_daemon() {
     [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！${NC}" && return 1
     stop_daemon
 
-    # 1. 处理订阅端口 (web_port)
     local web_port=""
     if [ -f "$PORT_RECORD_FILE" ]; then
         local old_port
@@ -652,7 +646,6 @@ start_daemon() {
         echo -e "${GREEN}[INFO] 已生成并记录新的订阅端口: ${web_port}${NC}"
     fi
 
-    # 2. 处理 Token
     local SUB_TOKEN=""
     if [ -f "$TOKEN_FILE" ]; then
         local old_token
@@ -673,7 +666,6 @@ start_daemon() {
         echo -e "${GREEN}[INFO] 已生成并记录新的 Token${NC}"
     fi
 
-    # 3. 启动并修复 Argo 隧道（自动关联并生成6个优选节点，不影响其他节点）
     manage_argo_tunnel
 
     cleanup_old_sub_firewall_rules
