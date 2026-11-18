@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Project: YinDun Client Subscription Manager & Background Daemon (sub.sh)
-# Description: 本地订阅分发守护进程（内置伴生静默自举与全自动开机托管）
+# Description: 本地订阅分发守护进程（保留完整终端交互确认 + 伴生静默自举）
 # ==============================================================================
 
 RED="\033[31m"
@@ -628,10 +628,9 @@ EOF
 }
 
 # ==============================================================================
-# 核心亮点：动态生成独立的“伴生静默启动脚本”并写入 Cron
+# 伴生静默启动脚本生成器（开机自启专用，无交互阻塞）
 # ==============================================================================
 prepare_boot_run_script() {
-    # 动态生成一个专门供开机静默调用的精简版脚本（绝对无 read 交互，自动复用历史状态）
     cat << EOF > "$BOOT_RUN_SCRIPT"
 #!/usr/bin/env bash
 sleep 15
@@ -649,14 +648,12 @@ CLOUDFLARED_BIN="\${CONFIG_DIR}/cloudflared"
 
 [ ! -f "\$NODES_DB" ] && exit 1
 
-# 停止旧进程
 if [ -f "\$PID_FILE" ]; then
     pid=\$(cat "\$PID_FILE")
     kill -0 "\$pid" 2>/dev/null && kill "\$pid" 2>/dev/null
     rm -f "\$PID_FILE"
 fi
 
-# 获取历史或随机端口
 web_port=""
 [ -f "\$PORT_RECORD_FILE" ] && web_port=\$(cat "\$PORT_RECORD_FILE")
 if [ -z "\$web_port" ]; then
@@ -667,7 +664,6 @@ if [ -z "\$web_port" ]; then
     echo "\$web_port" > "\$PORT_RECORD_FILE"
 fi
 
-# 获取历史或随机 Token
 SUB_TOKEN=""
 [ -f "\$TOKEN_FILE" ] && SUB_TOKEN=\$(cat "\$TOKEN_FILE")
 if [ -z "\$SUB_TOKEN" ]; then
@@ -675,7 +671,6 @@ if [ -z "\$SUB_TOKEN" ]; then
     echo "\$SUB_TOKEN" > "\$TOKEN_FILE"
 fi
 
-# 启动 Argo 隧道
 argo_port=""
 while IFS= read -r line; do
     if echo "\$line" | grep -q "TYPE=argo-wstls|"; then
@@ -705,17 +700,14 @@ if [ -n "\$argo_port" ]; then
     done
 fi
 
-# 重新生成订阅文件
 cd "\$CONFIG_DIR" || exit
 python3 "\$SUBSCRIPTION_GENERATOR"
 
-# 启动 Python 订阅后端
 nohup python3 "\$PYTHON_SERVER_FILE" "\$web_port" "\$SUB_TOKEN" "\$CONFIG_DIR" >/dev/null 2>&1 &
 echo \$! > "\$PID_FILE"
 EOF
     chmod +x "$BOOT_RUN_SCRIPT"
 
-    # 自动写入 Cron 任务去调度这个干净的伴生脚本
     local cron_cmd="@reboot /bin/bash ${BOOT_RUN_SCRIPT} >${CONFIG_DIR}/cron_boot.log 2>&1"
     if ! crontab -l 2>/dev/null | grep -q "${BOOT_RUN_SCRIPT}"; then
         (crontab -l 2>/dev/null; echo "$cron_cmd") | crontab -
@@ -726,7 +718,6 @@ start_daemon() {
     [ ! -f "$NODES_DB" ] && echo -e "${RED}[ERROR] 找不到总账本文件！请先通过 config.sh 配置节点。${NC}" && return 1
     stop_daemon
 
-    # 彻底清理掉之前可能残留的 systemd 服务
     if systemctl is-active --quiet yindun-sub 2>/dev/null || [ -f /etc/systemd/system/yindun-sub.service ]; then
         systemctl stop yindun-sub >/dev/null 2>&1
         systemctl disable yindun-sub >/dev/null 2>&1
@@ -734,14 +725,28 @@ start_daemon() {
         systemctl daemon-reload >/dev/null 2>&1
     fi
 
-    # 1. 自动生成伴生静默脚本并注册开机任务
+    # 1. 生成静默伴生脚本并注册开机任务
     prepare_boot_run_script
 
+    # 2. 恢复你原本带终端检测（if [ -t 0 ]）的端口交互确认逻辑
     local web_port=""
     if [ -f "$PORT_RECORD_FILE" ]; then
         local old_port
         old_port=$(cat "$PORT_RECORD_FILE")
-        [[ -n "$old_port" ]] && web_port="$old_port"
+        if [[ -n "$old_port" ]]; then
+            echo -e "${YELLOW}[INFO] 检测到已存在历史订阅端口: ${CYAN}${old_port}${NC}"
+            if [ -t 0 ]; then
+                read -p "是否使用现有端口？[Y/n] (默认回车使用现有): " choice_port
+                [[ -z "$choice_port" ]] && choice_port="y"
+            else
+                choice_port="y"
+                echo -e "${CYAN}[INFO] 非交互环境（后台启动），自动选择使用现有端口${NC}"
+            fi
+
+            if [[ "$choice_port" == "y" || "$choice_port" == "Y" ]]; then
+                web_port="$old_port"
+            fi
+        fi
     fi
 
     if [ -z "$web_port" ]; then
@@ -754,11 +759,25 @@ start_daemon() {
         echo -e "${GREEN}[INFO] 已生成并记录新的订阅端口: ${web_port}${NC}"
     fi
 
+    # 3. 恢复你原本带终端检测（if [ -t 0 ]）的 Token 交互确认逻辑
     local SUB_TOKEN=""
     if [ -f "$TOKEN_FILE" ]; then
         local old_token
         old_token=$(cat "$TOKEN_FILE")
-        [[ -n "$old_token" ]] && SUB_TOKEN="$old_token"
+        if [[ -n "$old_token" ]]; then
+            echo -e "${YELLOW}[INFO] 检测到已存在历史 Token: ${CYAN}${old_token}${NC}"
+            if [ -t 0 ]; then
+                read -p "是否使用现有 Token？[Y/n] (默认回车使用现有): " choice_token
+                [[ -z "$choice_token" ]] && choice_token="y"
+            else
+                choice_token="y"
+                echo -e "${CYAN}[INFO] 非交互环境（后台启动），自动选择使用现有 Token${NC}"
+            fi
+
+            if [[ "$choice_token" == "y" || "$choice_token" == "Y" ]]; then
+                SUB_TOKEN="$old_token"
+            fi
+        fi
     fi
 
     if [ -z "$SUB_TOKEN" ]; then
