@@ -383,31 +383,6 @@ if os.path.exists(nodes_db):
       username: "1"
       password: "{password}" """)
 
-            elif node_type == "xhttp-h3":
-                name = parts.get("NAME", "xhttp-h3-node").replace("-in-", "-out-")
-                ip, port_val, uuid, domain = parts.get("IP"), parts.get("PORT"), parts.get("UUID"), parts.get("DOMAIN", "cloudflare.com")
-                fingerprint = parts.get("FINGERPRINT", "")
-                mi_node_names.append(name)
-                mi_proxies.append(f"""  - name: "{name}"
-    type: vless
-    server: {ip}
-    port: {port_val}
-    uuid: {uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    skip-cert-verify: false
-    fingerprint: {fingerprint}
-    client-fingerprint: chrome
-    servername: {domain}
-    alpn:
-      - h3
-    xhttp-opts:
-      path: "yindun-xh3"
-      host: "{domain}"
-      mode: "auto" """)
-                all_links.append(f"vless://{uuid}@{ip}:{port_val}?encryption=none&security=tls&sni={domain}&alpn=h3&pcs={fingerprint}&fp=chrome&type=xhttp&host={domain}&path=yindun-xh3&mode=auto#{urllib.parse.quote(name)}")
-
 mi_proxies_list_6 = "\n".join([f'      - "{n}"' for n in mi_node_names]) if mi_node_names else '      - "DIRECT"'
 
 mihomo_full_config = f"""port: 7890
