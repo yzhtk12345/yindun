@@ -64,8 +64,17 @@ get_warp_port() {
     echo "$target_port"
 }
 
+# 获取当前生效的端口（默认 40000 或自定义端口）
+get_current_port() {
+    if [ -f "$WARP_PORT_FILE" ]; then
+        cat "$WARP_PORT_FILE"
+    else
+        echo "40000"
+    fi
+}
+
 # ==============================================================================
-# 功能一：安装 WARP 并连续获取 10 次 IP 直到成功
+# 基础安装与 IP 连通性验证
 # ==============================================================================
 install_and_verify_warp() {
     echo -e "${CYAN}[INFO] 正在检查并安装 Cloudflare WARP 客户端...${NC}"
@@ -87,12 +96,12 @@ install_and_verify_warp() {
         return 1
     fi
 
-    # 获取用户自定义或随机的端口
     local warp_port
     if [ -f "$WARP_PORT_FILE" ]; then
         warp_port=$(cat "$WARP_PORT_FILE")
+    else
+        warp_port=$(get_warp_port)
     fi
-    [[ -z "$warp_port" ]] && warp_port=$(get_warp_port)
 
     systemctl enable --now warp-svc >/dev/null 2>&1
     sleep 2
@@ -124,22 +133,66 @@ install_and_verify_warp() {
     fi
 }
 
-# 获取当前生效的端口（默认 40000 或自定义端口）
-get_current_port() {
-    if [ -f "$WARP_PORT_FILE" ]; then
-        cat "$WARP_PORT_FILE"
-    else
-        echo "40000"
-    fi
-}
-
 # ==============================================================================
-# 功能二：设置智能分流通道
+# 功能二：设置智能分流通道 (部分域名走 WARP)
 # ==============================================================================
 set_smart_routing() {
     echo -e "${CYAN}[INFO] 正在配置 WARP 智能分流通道...${NC}"
-    get_warp_port >/dev/null
-    install_and_verify_warp
+    local warp_port
+    if [ -f "$WARP_PORT_FILE" ]; then
+        warp_port=$(cat "$WARP_PORT_FILE")
+    else
+        warp_port=$(get_warp_port)
+    fi
+
+    install_and_verify_warp || return 1
+
+    if [ -f "$CONFIG_FILE" ]; then
+        echo -e "${CYAN}[INFO] 正在将智能分流规则注入 Mihomo 配置文件...${NC}"
+        python3 - "$CONFIG_FILE" "$warp_port" << 'PY_EOF'
+import sys, yaml
+
+config_path, warp_port = sys.argv[1], int(sys.argv[2])
+try:
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+except Exception as e:
+    print(f"读取配置文件失败: {e}")
+    sys.exit(1)
+
+proxies = data.get("proxies", [])
+warp_proxy = {"name": "WARP-Split", "type": "socks5", "server": "127.0.0.1", "port": warp_port}
+if not any(p.get("name") == "WARP-Split" for p in proxies):
+    proxies.insert(0, warp_proxy)
+else:
+    for i, p in enumerate(proxies):
+        if p.get("name") == "WARP-Split":
+            proxies[i] = warp_proxy
+data["proxies"] = proxies
+
+data["proxy-groups"] = [
+    {"name": "🚀 节点选择", "type": "select", "proxies": ["WARP-Split", "DIRECT"]},
+    {"name": "🤖 AI分流", "type": "select", "proxies": ["WARP-Split", "DIRECT"]}
+]
+
+data["rules"] = [
+    "DOMAIN-SUFFIX,openai.com,🤖 AI分流",
+    "DOMAIN-SUFFIX,chatgpt.com,🤖 AI分流",
+    "DOMAIN-SUFFIX,netflix.com,🚀 节点选择",
+    "DOMAIN-SUFFIX,netflix.net,🚀 节点选择",
+    "GEOIP,LAN,DIRECT",
+    "MATCH,DIRECT"
+]
+
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+print("SUCCESS")
+PY_EOF
+        systemctl restart mihomo >/dev/null 2>&1 || true
+        echo -e "${GREEN}[SUCCESS] WARP 智能分流通道配置成功并已重启 Mihomo！${NC}"
+    else
+        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})，仅完成了客户端连接。${NC}"
+    fi
 }
 
 # ==============================================================================
@@ -147,8 +200,55 @@ set_smart_routing() {
 # ==============================================================================
 set_global_warp() {
     echo -e "${CYAN}[INFO] 正在激活全局 WARP 代理通道...${NC}"
-    get_warp_port >/dev/null
-    install_and_verify_warp
+    local warp_port
+    if [ -f "$WARP_PORT_FILE" ]; then
+        warp_port=$(cat "$WARP_PORT_FILE")
+    else
+        warp_port=$(get_warp_port)
+    fi
+
+    install_and_verify_warp || return 1
+
+    if [ -f "$CONFIG_FILE" ]; then
+        echo -e "${CYAN}[INFO] 正在将全局代理规则注入 Mihomo 配置文件...${NC}"
+        python3 - "$CONFIG_FILE" "$warp_port" << 'PY_EOF'
+import sys, yaml
+
+config_path, warp_port = sys.argv[1], int(sys.argv[2])
+try:
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+except Exception as e:
+    print(f"读取配置文件失败: {e}")
+    sys.exit(1)
+
+proxies = data.get("proxies", [])
+warp_proxy = {"name": "WARP-Global", "type": "socks5", "server": "127.0.0.1", "port": warp_port}
+if not any(p.get("name") == "WARP-Global" for p in proxies):
+    proxies.insert(0, warp_proxy)
+else:
+    for i, p in enumerate(proxies):
+        if p.get("name") == "WARP-Global":
+            proxies[i] = warp_proxy
+data["proxies"] = proxies
+
+data["proxy-groups"] = [
+    {"name": "PROXY", "type": "select", "proxies": ["WARP-Global", "DIRECT"]}
+]
+
+data["rules"] = [
+    {"match": "PROXY"}
+]
+
+with open(config_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+print("SUCCESS")
+PY_EOF
+        systemctl restart mihomo >/dev/null 2>&1 || true
+        echo -e "${GREEN}[SUCCESS] 全局走 WARP 模式已成功激活并已重启 Mihomo！${NC}"
+    else
+        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})，仅完成了客户端连接。${NC}"
+    fi
 }
 
 # ==============================================================================
@@ -165,11 +265,10 @@ disable_and_restore_warp() {
         echo -e "${YELLOW}[WARN] 未检测到 WARP 客户端，跳过服务关闭。${NC}"
     fi
 
-    # 清理端口记录文件
     rm -f "$WARP_PORT_FILE"
 
     if [ -f "$CONFIG_FILE" ]; then
-        echo -e "${CYAN}[INFO] 正在移除配置中由 WARP 引入的多余字段，还原纯净 listeners 架构...${NC}"
+        echo -e "${CYAN}[INFO] 正在移除配置中由 WARP 引入的代理节点与路由规则...${NC}"
         python3 - "$CONFIG_FILE" << 'PY_EOF'
 import sys, yaml
 
@@ -192,7 +291,7 @@ print("SUCCESS")
 PY_EOF
 
         systemctl restart mihomo >/dev/null 2>&1 || true
-        echo -e "${GREEN}[SUCCESS] Mihomo 配置文件已成功还原为纯净的 listeners 架构并重启！${NC}"
+        echo -e "${GREEN}[SUCCESS] Mihomo 配置文件已成功恢复为纯净状态并重启！${NC}"
     else
         echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})。${NC}"
     fi
@@ -201,7 +300,7 @@ PY_EOF
 }
 
 # ==============================================================================
-# 功能五：检测 WARP 运行状态、IP 获取情况及流媒体支持
+# 功能五：综合状态与解锁检测
 # ==============================================================================
 check_warp_status() {
     local cur_port
@@ -273,7 +372,7 @@ show_menu() {
         echo -e "${GREEN}        YinDun Cloudflare WARP Management Menu         ${NC}"
         echo -e "${CYAN}========================================================${NC}"
         echo "1. 安装 WARP 并配置端口、获取 10 次 IP (直到成功)"
-        echo "2. 设置 AI 与流媒体分流通道"
+        echo "2. 设置 AI 与流媒体分流通道 (部分域名走 WARP)"
         echo "3. 设置全局 WARP 代理通道"
         echo "4. 关闭 WARP 并恢复正常状态 (深度清理残留字段)"
         echo "5. 综合状态检测 (运行状态、IP、解锁支持)"
