@@ -74,7 +74,7 @@ get_current_port() {
 }
 
 # ==============================================================================
-# 功能一：安装 WARP 并配置双栈(IPv4/IPv6)及验证
+# 功能一：安装 WARP 并验证连接
 # ==============================================================================
 install_and_verify_warp() {
     echo -e "${CYAN}[INFO] 正在检查并安装 Cloudflare WARP 客户端...${NC}"
@@ -108,16 +108,15 @@ install_and_verify_warp() {
 
     warp-cli --accept-tos registration new >/dev/null 2>&1 || true
     warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
-    warp-cli --accept-tos family ipv4_ipv6 >/dev/null 2>&1 || true
     warp-cli --accept-tos proxy port "$warp_port" >/dev/null 2>&1 || true
     warp-cli --accept-tos connect >/dev/null 2>&1 || true
 
-    echo -e "${CYAN}[INFO] 开始连续 10 次尝试连接并获取 WARP 双栈 IP (监听本地端口: ${warp_port})...${NC}"
+    echo -e "${CYAN}[INFO] 开始连续 10 次尝试连接并获取 WARP IP (监听本地端口: ${warp_port})...${NC}"
     local success=0
     for ((i=1; i<=10; i++)); do
-        echo -e "${YELLOW}[第 $i/10 次尝试] 正在验证 WARP 连接与双栈 IP...${NC}"
+        echo -e "${YELLOW}[第 $i/10 次尝试] 正在验证 WARP 连接与 IP...${NC}"
         local trace_res
-        trace_res=$(curl -s --socks5 127.0.0.1:"$warp_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+        trace_res=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:"$warp_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
         if echo "$trace_res" | grep -q "warp=on"; then
             local warp_ip
             warp_ip=$(echo "$trace_res" | grep "ip=" | cut -d= -f2)
@@ -291,14 +290,14 @@ PY_EOF
 }
 
 # ==============================================================================
-# 功能五：综合状态与双栈解锁检测
+# 功能五：综合状态与解锁检测 (含 VPS 直连 IP 与 WARP 出口检测)
 # ==============================================================================
 check_warp_status() {
     local cur_port
     cur_port=$(get_current_port)
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${GREEN}        Cloudflare WARP 双栈状态与解锁检测               ${NC}"
+    echo -e "${GREEN}        Cloudflare WARP 状态与解锁检测                  ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
     if systemctl is-active --quiet warp-svc; then
@@ -307,34 +306,54 @@ check_warp_status() {
         echo -e "1. WARP 服务进程状态 : ${RED}[ 未运行或未安装 ]${NC}"
     fi
 
-    echo -e "2. 正在通过本地 SOCKS5 端口 (${cur_port}) 测试双栈出口 IP..."
-    
+    echo -e "2. VPS 本机直连出口 IP:"
+    local vps_trace_4 vps_trace_6
+    vps_trace_4=$(curl -s4 --max-time 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    vps_trace_6=$(curl -s6 --max-time 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+
+    if [ -n "$vps_trace_4" ]; then
+        local vps_ip4=$(echo "$vps_trace_4" | grep "ip=" | cut -d= -f2)
+        local vps_loc4=$(echo "$vps_trace_4" | grep "loc=" | cut -d= -f2)
+        echo -e "   - 本机 IPv4       : ${CYAN}${vps_ip4:-无} (${vps_loc4:-未知})${NC}"
+    else
+        echo -e "   - 本机 IPv4       : ${YELLOW}[ 无 / 获取失败 ]${NC}"
+    fi
+
+    if [ -n "$vps_trace_6" ]; then
+        local vps_ip6=$(echo "$vps_trace_6" | grep "ip=" | cut -d= -f2)
+        local vps_loc6=$(echo "$vps_trace_6" | grep "loc=" | cut -d= -f2)
+        echo -e "   - 本机 IPv6       : ${CYAN}${vps_ip6:-无} (${vps_loc6:-未知})${NC}"
+    else
+        echo -e "   - 本机 IPv6       : ${YELLOW}[ 无 / 获取失败 ]${NC}"
+    fi
+
+    echo -e "\n3. WARP 本地 SOCKS5 端口 (${cur_port}) 出口检测:"
     local trace_output_4
-    trace_output_4=$(curl -s4 --max-time 5 --socks5 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    trace_output_4=$(curl -s4 --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
     if [ -n "$trace_output_4" ]; then
         local ip_val_4=$(echo "$trace_output_4" | grep "ip=" | cut -d= -f2)
         local loc_val_4=$(echo "$trace_output_4" | grep "loc=" | cut -d= -f2)
         local warp_val_4=$(echo "$trace_output_4" | grep "warp=" | cut -d= -f2)
-        echo -e "   - IPv4 出口地址   : ${CYAN}${ip_val_4:-获取失败} (${loc_val_4:-未知}) [WARP: ${warp_val_4:-off}]${NC}"
+        echo -e "   - WARP IPv4       : ${CYAN}${ip_val_4:-获取失败} (${loc_val_4:-未知}) [WARP: ${warp_val_4:-off}]${NC}"
     else
-        echo -e "   - IPv4 出口地址   : ${RED}[ 获取失败 / 超时 ]${NC}"
+        echo -e "   - WARP IPv4       : ${RED}[ 获取失败 / 超时 ]${NC}"
     fi
 
     local trace_output_6
-    trace_output_6=$(curl -s6 --max-time 5 --socks5 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    trace_output_6=$(curl -s6 --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
     if [ -n "$trace_output_6" ]; then
         local ip_val_6=$(echo "$trace_output_6" | grep "ip=" | cut -d= -f2)
         local loc_val_6=$(echo "$trace_output_6" | grep "loc=" | cut -d= -f2)
         local warp_val_6=$(echo "$trace_output_6" | grep "warp=" | cut -d= -f2)
-        echo -e "   - IPv6 出口地址   : ${CYAN}${ip_val_6:-获取失败} (${loc_val_6:-未知}) [WARP: ${warp_val_6:-off}]${NC}"
+        echo -e "   - WARP IPv6       : ${CYAN}${ip_val_6:-获取失败} (${loc_val_6:-未知}) [WARP: ${warp_val_6:-off}]${NC}"
     else
-        echo -e "   - IPv6 出口地址   : ${YELLOW}[ 未检测到 IPv6 或不支持 ]${NC}"
+        echo -e "   - WARP IPv6       : ${YELLOW}[ 当前代理会话未分配 IPv6 出口 ]${NC}"
     fi
 
-    echo -e "\n3. 主流服务解锁支持检测:"
+    echo -e "\n4. 主流服务解锁支持检测:"
     
     local openai_test
-    openai_test=$(curl -s --max-time 5 --socks5 127.0.0.1:"$cur_port" -o /dev/null -w "%{http_code}" https://chatgpt.com 2>/dev/null)
+    openai_test=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" -o /dev/null -w "%{http_code}" https://chatgpt.com 2>/dev/null)
     if [[ "$openai_test" == "200" || "$openai_test" == "403" ]]; then
         echo -e "   - ChatGPT / OpenAI  : ${GREEN}[ 支持 / 解锁 ] (Code: $openai_test)${NC}"
     else
@@ -342,7 +361,7 @@ check_warp_status() {
     fi
 
     local nf_test
-    nf_test=$(curl -s --max-time 5 --socks5 127.0.0.1:"$cur_port" -o /dev/null -w "%{http_code}" https://www.netflix.com/title/81280792 2>/dev/null)
+    nf_test=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" -o /dev/null -w "%{http_code}" https://www.netflix.com/title/81280792 2>/dev/null)
     if [[ "$nf_test" == "200" || "$nf_test" == "404" ]]; then
         echo -e "   - Netflix 解锁      : ${GREEN}[ 支持 / 解锁 ]${NC}"
     else
@@ -350,7 +369,7 @@ check_warp_status() {
     fi
 
     local yt_test
-    yt_test=$(curl -s --max-time 5 --socks5 127.0.0.1:"$cur_port" https://www.youtube.com/generate_204 2>/dev/null)
+    yt_test=$(curl -s --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" https://www.youtube.com/generate_204 2>/dev/null)
     if [ $? -eq 0 ]; then
         echo -e "   - YouTube / Google  : ${GREEN}[ 支持 / 访问正常 ]${NC}"
     else
@@ -370,11 +389,11 @@ show_menu() {
         echo -e "${CYAN}========================================================${NC}"
         echo -e "${GREEN}        YinDun Cloudflare WARP Management Menu         ${NC}"
         echo -e "${CYAN}========================================================${NC}"
-        echo "1. 安装 WARP 并配置双栈端口、获取 10 次 IP (直到成功)"
+        echo "1. 安装 WARP 并配置端口、获取 10 次 IP (直到成功)"
         echo "2. 设置 AI 与流媒体分流通道 (部分域名走 WARP)"
         echo "3. 设置全局 WARP 代理通道"
         echo "4. 关闭 WARP 并恢复正常状态 (深度清理残留字段)"
-        echo "5. 综合状态检测 (运行状态、双栈 IP、解锁支持)"
+        echo "5. 综合状态检测 (运行状态、本机/WARP IP、解锁支持)"
         echo "0. 返回上级 / 退出"
         echo -e "${CYAN}========================================================${NC}"
         read -p "请输入选项 [0-5]: " choice
