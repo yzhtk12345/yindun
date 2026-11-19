@@ -28,7 +28,7 @@ check_port_used() {
     fi
 }
 
-# 获取或指定 WARP 代理端口 (20000-60000 随机或手动) —— 已修复输出污染问题
+# 获取或指定 WARP 代理端口 (20000-60000 随机或手动)
 get_warp_port() {
     local target_port=""
     echo -e "${CYAN}--------------------------------------------------------${NC}" >&2
@@ -74,7 +74,7 @@ get_current_port() {
 }
 
 # ==============================================================================
-# 基础安装与 IP 连通性验证
+# 功能一：安装 WARP 并配置双栈(IPv4/IPv6)及验证
 # ==============================================================================
 install_and_verify_warp() {
     echo -e "${CYAN}[INFO] 正在检查并安装 Cloudflare WARP 客户端...${NC}"
@@ -108,13 +108,15 @@ install_and_verify_warp() {
 
     warp-cli --accept-tos registration new >/dev/null 2>&1 || true
     warp-cli --accept-tos mode proxy >/dev/null 2>&1 || true
+    # 启用 IPv4 与 IPv6 双栈支持
+    warp-cli --accept-tos family ipv4_ipv6 >/dev/null 2>&1 || true
     warp-cli --accept-tos proxy port "$warp_port" >/dev/null 2>&1 || true
     warp-cli --accept-tos connect >/dev/null 2>&1 || true
 
-    echo -e "${CYAN}[INFO] 开始连续 10 次尝试连接并获取 WARP IP (监听本地端口: ${warp_port})...${NC}"
+    echo -e "${CYAN}[INFO] 开始连续 10 次尝试连接并获取 WARP 双栈 IP (监听本地端口: ${warp_port})...${NC}"
     local success=0
     for ((i=1; i<=10; i++)); do
-        echo -e "${YELLOW}[第 $i/10 次尝试] 正在验证 WARP 连接与 IP...${NC}"
+        echo -e "${YELLOW}[第 $i/10 次尝试] 正在验证 WARP 连接与双栈 IP...${NC}"
         local trace_res
         trace_res=$(curl -s --socks5 127.0.0.1:"$warp_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
         if echo "$trace_res" | grep -q "warp=on"; then
@@ -134,21 +136,22 @@ install_and_verify_warp() {
 }
 
 # ==============================================================================
-# 功能二：设置智能分流通道 (部分域名走 WARP)
+# 功能二：设置智能分流通道 (部分域名走 WARP，直接读取现有端口与配置)
 # ==============================================================================
 set_smart_routing() {
     echo -e "${CYAN}[INFO] 正在配置 WARP 智能分流通道...${NC}"
-    local warp_port
-    if [ -f "$WARP_PORT_FILE" ]; then
-        warp_port=$(cat "$WARP_PORT_FILE")
-    else
-        warp_port=$(get_warp_port)
+    
+    # 检查是否已安装或配置过端口，若未安装则先执行基础初始化
+    if ! command -v warp-cli &>/dev/null || ! systemctl is-active --quiet warp-svc; then
+        echo -e "${YELLOW}[INFO] 检测到 WARP 客户端未安装或未运行，正在引导初始化...${NC}"
+        install_and_verify_warp || return 1
     fi
 
-    install_and_verify_warp || return 1
+    local warp_port
+    warp_port=$(get_current_port)
 
     if [ -f "$CONFIG_FILE" ]; then
-        echo -e "${CYAN}[INFO] 正在将智能分流规则注入 Mihomo 配置文件...${NC}"
+        echo -e "${CYAN}[INFO] 正在将智能分流规则注入 Mihomo 配置文件 (端口: ${warp_port})...${NC}"
         python3 - "$CONFIG_FILE" "$warp_port" << 'PY_EOF'
 import sys, yaml
 
@@ -191,26 +194,27 @@ PY_EOF
         systemctl restart mihomo >/dev/null 2>&1 || true
         echo -e "${GREEN}[SUCCESS] WARP 智能分流通道配置成功并已重启 Mihomo！${NC}"
     else
-        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})，仅完成了客户端连接。${NC}"
+        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})。${NC}"
     fi
 }
 
 # ==============================================================================
-# 功能三：设置全局走 WARP
+# 功能三：设置全局走 WARP (直接读取现有端口与配置，无需重复跑10次检测)
 # ==============================================================================
 set_global_warp() {
     echo -e "${CYAN}[INFO] 正在激活全局 WARP 代理通道...${NC}"
-    local warp_port
-    if [ -f "$WARP_PORT_FILE" ]; then
-        warp_port=$(cat "$WARP_PORT_FILE")
-    else
-        warp_port=$(get_warp_port)
+
+    # 检查是否已安装或配置过端口，若未安装则先执行基础初始化
+    if ! command -v warp-cli &>/dev/null || ! systemctl is-active --quiet warp-svc; then
+        echo -e "${YELLOW}[INFO] 检测到 WARP 客户端未安装或未运行，正在引导初始化...${NC}"
+        install_and_verify_warp || return 1
     fi
 
-    install_and_verify_warp || return 1
+    local warp_port
+    warp_port=$(get_current_port)
 
     if [ -f "$CONFIG_FILE" ]; then
-        echo -e "${CYAN}[INFO] 正在将全局代理规则注入 Mihomo 配置文件...${NC}"
+        echo -e "${CYAN}[INFO] 正在将全局代理规则注入 Mihomo 配置文件 (端口: ${warp_port})...${NC}"
         python3 - "$CONFIG_FILE" "$warp_port" << 'PY_EOF'
 import sys, yaml
 
@@ -247,7 +251,7 @@ PY_EOF
         systemctl restart mihomo >/dev/null 2>&1 || true
         echo -e "${GREEN}[SUCCESS] 全局走 WARP 模式已成功激活并已重启 Mihomo！${NC}"
     else
-        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})，仅完成了客户端连接。${NC}"
+        echo -e "${YELLOW}[WARN] 未找到 Mihomo 配置文件 (${CONFIG_FILE})。${NC}"
     fi
 }
 
@@ -300,14 +304,14 @@ PY_EOF
 }
 
 # ==============================================================================
-# 功能五：综合状态与解锁检测
+# 功能五：综合状态与双栈解锁检测
 # ==============================================================================
 check_warp_status() {
     local cur_port
     cur_port=$(get_current_port)
 
     echo -e "\n${CYAN}========================================================${NC}"
-    echo -e "${GREEN}            Cloudflare WARP 状态与解锁检测               ${NC}"
+    echo -e "${GREEN}        Cloudflare WARP 双栈状态与解锁检测               ${NC}"
     echo -e "${CYAN}========================================================${NC}"
 
     if systemctl is-active --quiet warp-svc; then
@@ -316,20 +320,30 @@ check_warp_status() {
         echo -e "1. WARP 服务进程状态 : ${RED}[ 未运行或未安装 ]${NC}"
     fi
 
-    echo -e "2. 正在通过本地 SOCKS5 端口 (${cur_port}) 测试出口 IP..."
-    local trace_output
-    trace_output=$(curl -s --max-time 5 --socks5 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    echo -e "2. 正在通过本地 SOCKS5 端口 (${cur_port}) 测试双栈出口 IP..."
     
-    if [ -n "$trace_output" ]; then
-        local ip_val=$(echo "$trace_output" | grep "ip=" | cut -d= -f2)
-        local loc_val=$(echo "$trace_output" | grep "loc=" | cut -d= -f2)
-        local warp_val=$(echo "$trace_output" | grep "warp=" | cut -d= -f2)
-        
-        echo -e "   - 代理出口 IP     : ${CYAN}${ip_val:-获取失败}${NC}"
-        echo -e "   - 虚拟国家/地区   : ${CYAN}${loc_val:-未知}${NC}"
-        echo -e "   - WARP 加密状态   : ${GREEN}${warp_val:-off}${NC}"
+    # 测试 IPv4
+    local trace_output_4
+    trace_output_4=$(curl -s4 --max-time 5 --socks5 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    if [ -n "$trace_output_4" ]; then
+        local ip_val_4=$(echo "$trace_output_4" | grep "ip=" | cut -d= -f2)
+        local loc_val_4=$(echo "$trace_output_4" | grep "loc=" | cut -d= -f2)
+        local warp_val_4=$(echo "$trace_output_4" | grep "warp=" | cut -d= -f2)
+        echo -e "   - IPv4 出口地址   : ${CYAN}${ip_val_4:-获取失败} (${loc_val:-未知}) [WARP: ${warp_val:-off}]${NC}"
     else
-        echo -e "   ${RED}[WARN] 无法通过本地 SOCKS5 (127.0.0.1:${cur_port}) 获取出口信息，请确认 WARP 是否已连接。${NC}"
+        echo -e "   - IPv4 出口地址   : ${RED}[ 获取失败 / 超时 ]${NC}"
+    fi
+
+    # 测试 IPv6
+    local trace_output_6
+    trace_output_6=$(curl -s6 --max-time 5 --socks5 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    if [ -n "$trace_output_6" ]; then
+        local ip_val_6=$(echo "$trace_output_6" | grep "ip=" | cut -d= -f2)
+        local loc_val_6=$(echo "$trace_output_6" | grep "loc=" | cut -d= -f2)
+        local warp_val_6=$(echo "$trace_output_6" | grep "warp=" | cut -d= -f2)
+        echo -e "   - IPv6 出口地址   : ${CYAN}${ip_val_6:-获取失败} (${loc_val:-未知}) [WARP: ${warp_val:-off}]${NC}"
+    else
+        echo -e "   - IPv6 出口地址   : ${YELLOW}[ 未检测到 IPv6 或不支持 ]${NC}"
     fi
 
     echo -e "\n3. 主流服务解锁支持检测:"
@@ -371,11 +385,11 @@ show_menu() {
         echo -e "${CYAN}========================================================${NC}"
         echo -e "${GREEN}        YinDun Cloudflare WARP Management Menu         ${NC}"
         echo -e "${CYAN}========================================================${NC}"
-        echo "1. 安装 WARP 并配置端口、获取 10 次 IP (直到成功)"
+        echo "1. 安装 WARP 并配置双栈端口、获取 10 次 IP (直到成功)"
         echo "2. 设置 AI 与流媒体分流通道 (部分域名走 WARP)"
         echo "3. 设置全局 WARP 代理通道"
         echo "4. 关闭 WARP 并恢复正常状态 (深度清理残留字段)"
-        echo "5. 综合状态检测 (运行状态、IP、解锁支持)"
+        echo "5. 综合状态检测 (运行状态、双栈 IP、解锁支持)"
         echo "0. 返回上级 / 退出"
         echo -e "${CYAN}========================================================${NC}"
         read -p "请输入选项 [0-5]: " choice
@@ -387,7 +401,7 @@ show_menu() {
                 ;;
             2)
                 set_smart_routing
-                read -p "按回真键返回主菜单..."
+                read -p "按回车键返回主菜单..."
                 ;;
             3)
                 set_global_warp
