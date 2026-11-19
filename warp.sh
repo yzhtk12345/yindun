@@ -292,6 +292,30 @@ PY_EOF
 # ==============================================================================
 # 功能五：综合状态与解锁检测 (含 VPS 直连 IP 与 WARP 出口检测)
 # ==============================================================================
+print_warp_trace_line() {
+    local trace_data="$1"
+    local fallback_label="$2"
+    if [ -z "$trace_data" ]; then
+        echo -e "   - ${fallback_label}       : ${YELLOW}[ 未获取到出口信息 ]${NC}"
+        return
+    fi
+
+    local ip_val loc_val warp_val label
+    ip_val=$(echo "$trace_data" | grep "ip=" | cut -d= -f2)
+    loc_val=$(echo "$trace_data" | grep "loc=" | cut -d= -f2)
+    warp_val=$(echo "$trace_data" | grep "warp=" | cut -d= -f2)
+
+    if [[ "$ip_val" == *:* ]]; then
+        label="WARP IPv6"
+    elif [ -n "$ip_val" ]; then
+        label="WARP IPv4"
+    else
+        label="$fallback_label"
+    fi
+
+    echo -e "   - ${label}       : ${CYAN}${ip_val:-获取失败} (${loc_val:-未知}) [WARP: ${warp_val:-off}]${NC}"
+}
+
 check_warp_status() {
     local cur_port
     cur_port=$(get_current_port)
@@ -328,26 +352,19 @@ check_warp_status() {
     fi
 
     echo -e "\n3. WARP 本地 SOCKS5 端口 (${cur_port}) 出口检测:"
-    local trace_output_4
+    local trace_output_4 trace_output_6
     trace_output_4=$(curl -s4 --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
-    if [ -n "$trace_output_4" ]; then
-        local ip_val_4=$(echo "$trace_output_4" | grep "ip=" | cut -d= -f2)
-        local loc_val_4=$(echo "$trace_output_4" | grep "loc=" | cut -d= -f2)
-        local warp_val_4=$(echo "$trace_output_4" | grep "warp=" | cut -d= -f2)
-        echo -e "   - WARP IPv4       : ${CYAN}${ip_val_4:-获取失败} (${loc_val_4:-未知}) [WARP: ${warp_val_4:-off}]${NC}"
-    else
-        echo -e "   - WARP IPv4       : ${RED}[ 获取失败 / 超时 ]${NC}"
-    fi
-
-    local trace_output_6
     trace_output_6=$(curl -s6 --max-time 5 --socks5-hostname 127.0.0.1:"$cur_port" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+
+    print_warp_trace_line "$trace_output_4" "WARP 出口"
     if [ -n "$trace_output_6" ]; then
         local ip_val_6=$(echo "$trace_output_6" | grep "ip=" | cut -d= -f2)
-        local loc_val_6=$(echo "$trace_output_6" | grep "loc=" | cut -d= -f2)
-        local warp_val_6=$(echo "$trace_output_6" | grep "warp=" | cut -d= -f2)
-        echo -e "   - WARP IPv6       : ${CYAN}${ip_val_6:-获取失败} (${loc_val_6:-未知}) [WARP: ${warp_val_6:-off}]${NC}"
+        local ip_val_4=$(echo "$trace_output_4" | grep "ip=" | cut -d= -f2)
+        if [ "$ip_val_6" != "$ip_val_4" ]; then
+            print_warp_trace_line "$trace_output_6" "WARP IPv6"
+        fi
     else
-        echo -e "   - WARP IPv6       : ${YELLOW}[ 当前代理会话未分配 IPv6 出口 ]${NC}"
+        echo -e "   - WARP 额外 IPv6  : ${YELLOW}[ 当前会话未单独分配额外 IPv6 出口 ]${NC}"
     fi
 
     echo -e "\n4. 主流服务解锁支持检测:"
@@ -432,3 +449,5 @@ show_menu() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     show_menu
 fi
+
+<FollowUp label="Want me to add a Mihomo service status check inside check_warp_status?" query="请帮我在 check_warp_status 中加上 Mihomo 服务运行状态的检测。"/>
