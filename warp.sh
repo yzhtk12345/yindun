@@ -28,20 +28,20 @@ check_port_used() {
     fi
 }
 
-# 获取或指定 WARP 代理端口 (20000-60000 随机或手动)
+# 获取或指定 WARP 代理端口 (20000-60000 随机或手动) —— 已修复输出污染问题
 get_warp_port() {
     local target_port=""
-    echo -e "${CYAN}--------------------------------------------------------${NC}"
-    read -p "请选择 WARP 代理端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_choice
+    echo -e "${CYAN}--------------------------------------------------------${NC}" >&2
+    read -p "请选择 WARP 代理端口获取方式 [1. 自动随机获取 2. 手动指定] (默认 1): " port_choice >&2
     
     if [[ "$port_choice" == "2" ]]; then
-        read -p "请输入您指定的端口 [20000-60000]: " target_port
+        read -p "请输入您指定的端口 [20000-60000]: " target_port >&2
         if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 20000 ] || [ "$target_port" -gt 60000 ]; then
-            echo -e "${RED}[ERROR] 端口输入无效（必须在 20000-60000 之间），已自动为您随机获取！${NC}"
+            echo -e "${RED}[ERROR] 端口输入无效（必须在 20000-60000 之间），已自动为您随机获取！${NC}" >&2
             target_port=""
         elif check_port_used "$target_port"; then
-            echo -e "${YELLOW}[WARN] 端口 ${target_port} 当前已被占用！${NC}"
-            read -p "是否仍要强行使用此端口？[y/N]: " force_choice
+            echo -e "${YELLOW}[WARN] 端口 ${target_port} 当前已被占用！${NC}" >&2
+            read -p "是否仍要强行使用此端口？[y/N]: " force_choice >&2
             if [[ "$force_choice" != "y" && "$force_choice" != "Y" ]]; then
                 target_port=""
             fi
@@ -55,9 +55,9 @@ get_warp_port() {
                 break
             fi
         done
-        echo -e "${GREEN}[INFO] 已自动随机分配可用端口: ${target_port}${NC}"
+        echo -e "${GREEN}[INFO] 已自动随机分配可用端口: ${target_port}${NC}" >&2
     else
-        echo -e "${GREEN}[INFO] 将使用指定端口: ${target_port}${NC}"
+        echo -e "${GREEN}[INFO] 将使用指定端口: ${target_port}${NC}" >&2
     fi
 
     echo "$target_port" > "$WARP_PORT_FILE"
@@ -196,7 +196,7 @@ PY_EOF
 }
 
 # ==============================================================================
-# 功能三：设置全局走 WARP (已修复 rules 格式)
+# 功能三：设置全局走 WARP
 # ==============================================================================
 set_global_warp() {
     echo -e "${CYAN}[INFO] 正在激活全局 WARP 代理通道...${NC}"
@@ -387,7 +387,7 @@ show_menu() {
                 ;;
             2)
                 set_smart_routing
-                read -p "按回车键返回主菜单..."
+                read -p "按回真键返回主菜单..."
                 ;;
             3)
                 set_global_warp
