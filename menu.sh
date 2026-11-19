@@ -17,7 +17,7 @@ LOG_DIR="${BASE_DIR}/logs"
 mkdir -p "${MIHOMO_DIR}" "${WARP_DIR}" "${LOG_DIR}"
 
 # 脚本版本号
-SCRIPT_VERSION="v1.0.2"
+SCRIPT_VERSION="v1.0.3"
 
 # 颜色定义
 RED="\033[31m"
@@ -95,18 +95,38 @@ get_system_info() {
         IP_TYPE="${RED}无公网 IP${NC}"
     fi
 
-    # 5. Mihomo 安装状态与版本检查
+    # 5. Mihomo 安装与运行状态检查
+    local mihomo_run_state=""
+    if systemctl is-active --quiet mihomo 2>/dev/null; then
+        mihomo_run_state=" / ${GREEN}运行中${NC}"
+    elif [ -f "${MIHOMO_DIR}/mihomo" ]; then
+        mihomo_run_state=" / ${YELLOW}未运行${NC}"
+    fi
+
     if [ -f "${MIHOMO_DIR}/mihomo" ]; then
-        MIHOMO_STATUS="${GREEN}已安装${NC}"
-        MIHOMO_VER=$("${MIHOMO_DIR}/mihomo" -v 2>/dev/null | awk '{print $2}' || echo "获取失败")
+        MIHOMO_STATUS="${GREEN}已安装${NC}${mihomo_run_state}"
+        MIHOMO_VER=$("${MIHOMO_DIR}/mihomo" -v 2>/dev/null | head -n 1 | awk '{print $2}' || echo "获取失败")
     else
         MIHOMO_STATUS="${RED}未安装${NC}"
         MIHOMO_VER="N/A"
     fi
 
-    # 6. WARP 状态检查
-    if systemctl is-active --quiet wg-quick@wgcf 2>/dev/null || ip link show dev wgcf 2>/dev/null | grep -q "UP"; then
-        WARP_STATUS="${GREEN}运行中${NC}"
+    # 6. WARP 状态检查 (兼容 warp-svc / warp-cli 以及 wgcf/wg-quick@wgcf)
+    local warp_port=""
+    if [ -f "${MIHOMO_DIR}/warp_port.txt" ]; then
+        warp_port=$(cat "${MIHOMO_DIR}/warp_port.txt")
+    fi
+
+    if systemctl is-active --quiet warp-svc 2>/dev/null; then
+        if command -v warp-cli &>/dev/null && warp-cli status 2>/dev/null | grep -qi "Connected"; then
+            WARP_STATUS="${GREEN}运行中${NC}${warp_port:+ (SOCKS5: ${warp_port})}"
+        else
+            WARP_STATUS="${GREEN}运行中${NC}${warp_port:+ (端口: ${warp_port})}"
+        fi
+    elif systemctl is-active --quiet wg-quick@wgcf 2>/dev/null || ip link show dev wgcf 2>/dev/null | grep -q "UP"; then
+        WARP_STATUS="${GREEN}运行中 (wgcf)${NC}"
+    elif command -v warp-cli &>/dev/null; then
+        WARP_STATUS="${YELLOW}已安装未运行${NC}"
     else
         WARP_STATUS="${YELLOW}未启用${NC}"
     fi
@@ -132,7 +152,8 @@ show_menu() {
     echo -e " 网络状态 : ${IP_TYPE}"
     echo -e "   ├─ IPv4  : ${IPV4_STATUS}"
     echo -e "   └─ IPv6  : ${IPV6_STATUS}"
-    echo -e " 核心状态 : Mihomo [${MIHOMO_STATUS} - ${MIHOMO_VER}] | WARP [${WARP_STATUS}]"
+    echo -e " Mihomo   : ${MIHOMO_STATUS} (${MIHOMO_VER})"
+    echo -e " WARP     : ${WARP_STATUS}"
     echo -e "${BLUE}--------------------------------------------------------${NC}"
     echo -e " ${GREEN}1.${NC} Linux 系统安全配置 (safety.sh)"
     echo -e " ${GREEN}2.${NC} 安装/更新 Mihomo 核心 (install.sh)"
