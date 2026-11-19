@@ -427,4 +427,3 @@ show_menu() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     show_menu
 fi
-```[cite: 8]
