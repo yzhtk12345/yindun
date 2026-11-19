@@ -196,7 +196,7 @@ PY_EOF
 }
 
 # ==============================================================================
-# 功能三：设置全局走 WARP
+# 功能三：设置全局走 WARP (已修复 rules 格式)
 # ==============================================================================
 set_global_warp() {
     echo -e "${CYAN}[INFO] 正在激活全局 WARP 代理通道...${NC}"
@@ -237,7 +237,7 @@ data["proxy-groups"] = [
 ]
 
 data["rules"] = [
-    {"match": "PROXY"}
+    "MATCH,PROXY"
 ]
 
 with open(config_path, "w", encoding="utf-8") as f:
