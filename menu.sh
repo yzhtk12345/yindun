@@ -30,6 +30,79 @@ NC="\033[0m"
 # 仓库 Raw 地址
 REPO_URL="https://raw.githubusercontent.com/yzhtk12345/yindun/refs/heads/main"
 
+# ------------------------------------------------------------------------------
+# 安装 / 更新全局快捷命令 `yindun`
+# ------------------------------------------------------------------------------
+install_shortcut() {
+    local local_menu="${BASE_DIR}/menu.sh"
+    local shortcut_path="/usr/local/bin/yindun"
+
+    # 1. 保存当前脚本到本地 /etc/yindun/menu.sh
+    if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+        cp -f "${BASH_SOURCE[0]}" "${local_menu}" 2>/dev/null || true
+    fi
+
+    if [ ! -f "${local_menu}" ]; then
+        curl -fsSL "${REPO_URL}/menu.sh" -o "${local_menu}" 2>/dev/null || true
+    fi
+
+    if [ -f "${local_menu}" ]; then
+        chmod +x "${local_menu}"
+    fi
+
+    # 2. 清理可能存在的旧 alias，避免与 /usr/local/bin/yindun 冲突
+    for rc_file in "$HOME/.bashrc" "/root/.bashrc" "/etc/profile"; do
+        if [ -f "$rc_file" ]; then
+            sed -i '/alias yindun=/d' "$rc_file" 2>/dev/null || true
+        fi
+    done
+
+    # 3. 写入全局可执行命令 /usr/local/bin/yindun
+    cat <<EOF > "${shortcut_path}"
+#!/usr/bin/env bash
+set -u
+
+BASE_DIR="/etc/yindun"
+LOCAL_MENU="\${BASE_DIR}/menu.sh"
+REPO_URL="${REPO_URL}"
+
+if [[ \$EUID -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+        exec sudo bash "${shortcut_path}" "\$@"
+    else
+        echo -e "\033[31m[ERROR] 请使用 root 权限运行 yindun！\033[0m"
+        exit 1
+    fi
+fi
+
+mkdir -p "\${BASE_DIR}"
+
+# 输入 yindun 时尝试拉取最新 menu.sh；若网络失败则保留本地版本继续启动
+tmp_menu="\$(mktemp)"
+if curl -fsSL --connect-timeout 3 --max-time 8 "\${REPO_URL}/menu.sh" -o "\${tmp_menu}" 2>/dev/null && grep -q "YinDun Server Manager" "\${tmp_menu}"; then
+    mv -f "\${tmp_menu}" "\${LOCAL_MENU}"
+    chmod +x "\${LOCAL_MENU}"
+else
+    rm -f "\${tmp_menu}"
+fi
+
+if [ -f "\${LOCAL_MENU}" ]; then
+    exec bash "\${LOCAL_MENU}" "\$@"
+else
+    echo -e "\033[31m[ERROR] 未找到 \${LOCAL_MENU}，且无法从远程拉取。\033[0m"
+    exit 1
+fi
+EOF
+
+    chmod +x "${shortcut_path}"
+}
+
+# 防止在 `/usr/local/bin/yindun` 包装器中再次触发重复写入
+if [[ "${YINDUN_SHORTCUT_INSTALLED:-0}" != "1" ]]; then
+    install_shortcut
+    export YINDUN_SHORTCUT_INSTALLED=1
+fi
+
 # 远程调用子脚本函数
 run_remote_script() {
     local script_name="$1"
